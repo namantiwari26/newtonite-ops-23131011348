@@ -4,3 +4,4 @@ dist
 pgdata
 .DS_Store
 *.log
+study-guide/
