@@ -26,7 +26,9 @@ services:
     environment:
       PORT: 4000
       DATABASE_URL: postgres://workdesk:workdesk_secret@workdesk-db:5432/workdesk
-      JWT_SECRET: workdesk_production_jwt_secret_key_32_chars_long
+      POSTGRES_PASSWORD: workdesk_secret
+      JWT_SECRET: ${JWT_SECRET:-workdesk_production_jwt_secret_key_32_chars_long}
+      SEED_ITEMS: ${SEED_ITEMS:-20000}
       NODE_ENV: production
     ports:
       - "4000:4000"
