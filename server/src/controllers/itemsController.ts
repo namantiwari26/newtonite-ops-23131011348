@@ -1,0 +1,768 @@
+import { Request, Response } from 'express';
+import { pool, withTransaction } from '../db/pool.js';
+import { can } from '../auth/can.js';
+import { CursorPayload, WorkItem, Comment } from '../types.js';
+
+// Helper to encode and decode base64 cursor for keyset pagination
+function encodeCursor(payload: CursorPayload): string {
+  return Buffer.from(JSON.stringify(payload)).toString('base64');
+}
+
+function decodeCursor(cursorStr: string): CursorPayload | null {
+  try {
+    const raw = Buffer.from(cursorStr, 'base64').toString('utf-8');
+    const parsed = JSON.parse(raw);
+    if (parsed.created_at && parsed.id) {
+      return parsed as CursorPayload;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET /api/items
+ * Keyset cursor pagination with server-side filters on work_items.
+ */
+export async function listItems(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const teamId = (req.query.team_id as string) || '';
+  const status = (req.query.status as string) || '';
+  const priority = (req.query.priority as string) || '';
+  const assignee = (req.query.assignee as string) || '';
+  const search = (req.query.search as string) || '';
+  const rawLimit = parseInt(req.query.limit as string, 10);
+  const limit = Math.min(Math.max(isNaN(rawLimit) ? 10 : rawLimit, 1), 50);
+  const cursorStr = (req.query.cursor as string) || '';
+
+  // Task 2: Users outside an item's team get 404
+  let allowedTeamIds: string[] = [];
+  if (user.is_admin) {
+    if (teamId) {
+      allowedTeamIds = [teamId];
+    }
+  } else {
+    const userTeamIds = user.memberships.map((m) => m.team_id);
+    if (teamId) {
+      if (!userTeamIds.includes(teamId)) {
+        res.status(404).json({
+          error: 'NOT_FOUND',
+          message: 'Team not found.',
+        });
+        return;
+      }
+      allowedTeamIds = [teamId];
+    } else {
+      allowedTeamIds = userTeamIds;
+    }
+  }
+
+  // Non-admins with no team memberships see empty list
+  if (!user.is_admin && allowedTeamIds.length === 0) {
+    res.json({ items: [], next_cursor: null, has_more: false, total_count: 0 });
+    return;
+  }
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+  let paramIdx = 1;
+
+  if (allowedTeamIds.length > 0) {
+    conditions.push(`w.team_id = ANY($${paramIdx++})`);
+    params.push(allowedTeamIds);
+  }
+
+  if (status) {
+    conditions.push(`w.status = $${paramIdx++}`);
+    params.push(status);
+  }
+
+  if (priority) {
+    conditions.push(`w.priority = $${paramIdx++}`);
+    params.push(priority);
+  }
+
+  if (assignee === 'unassigned') {
+    conditions.push(`w.assignee_id IS NULL`);
+  } else if (assignee) {
+    conditions.push(`w.assignee_id = $${paramIdx++}`);
+    params.push(assignee);
+  }
+
+  if (search) {
+    // Utilize GIN full-text index and ILIKE fallback
+    conditions.push(`(to_tsvector('english', w.title || ' ' || w.description) @@ plainto_tsquery('english', $${paramIdx}) OR w.title ILIKE $${paramIdx + 1})`);
+    params.push(search, `%${search}%`);
+    paramIdx += 2;
+  }
+
+  // Keyset cursor pagination: fetch items older than the cursor
+  if (cursorStr) {
+    const decoded = decodeCursor(cursorStr);
+    if (decoded) {
+      conditions.push(`(w.created_at, w.id) < ($${paramIdx++}, $${paramIdx++})`);
+      params.push(decoded.created_at, decoded.id);
+    }
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+
+  // Get total count for current filter scope
+  const countParams = cursorStr ? params.slice(0, params.length - 2) : params;
+  const countConditions = cursorStr ? conditions.slice(0, conditions.length - 1) : conditions;
+  const countWhere = countConditions.length > 0 ? `WHERE ${countConditions.join(' AND ')}` : '';
+
+  const countResult = await pool.query<{ count: string }>(
+    `SELECT COUNT(*) as count FROM work_items w ${countWhere}`,
+    countParams
+  );
+  const totalCount = parseInt(countResult.rows[0]?.count || '0', 10);
+
+  // Keyset query against work_items table
+  const querySql = `
+    SELECT 
+      w.id, w.team_id, w.title, w.description, w.type, w.status, w.priority,
+      w.assignee_id, u_assignee.name AS assignee_name,
+      w.created_by, u_creator.name AS creator_name,
+      w.due_date, w.version, w.created_at, w.updated_at
+    FROM work_items w
+    LEFT JOIN users u_assignee ON w.assignee_id = u_assignee.id
+    LEFT JOIN users u_creator ON w.created_by = u_creator.id
+    ${whereClause}
+    ORDER BY w.created_at DESC, w.id DESC
+    LIMIT $${paramIdx};
+  `;
+  params.push(limit + 1);
+
+  const result = await pool.query<WorkItem>(querySql, params);
+  const rows = result.rows;
+
+  const hasMore = rows.length > limit;
+  const items = hasMore ? rows.slice(0, limit) : rows;
+
+  let nextCursor: string | null = null;
+  if (hasMore && items.length > 0) {
+    const last = items[items.length - 1];
+    nextCursor = encodeCursor({
+      created_at: last.created_at,
+      id: last.id,
+    });
+  }
+
+  res.json({
+    items,
+    next_cursor: nextCursor,
+    has_more: hasMore,
+    total_count: totalCount,
+  });
+}
+
+/**
+ * GET /api/items/:id
+ * Retrieve work item by ID with activity events and comments.
+ */
+export async function getItemById(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const { id } = req.params;
+
+  const itemResult = await pool.query<WorkItem>(
+    `SELECT 
+       w.id, w.team_id, w.title, w.description, w.type, w.status, w.priority,
+       w.assignee_id, u_assignee.name AS assignee_name,
+       w.created_by, u_creator.name AS creator_name,
+       w.due_date, w.version, w.created_at, w.updated_at
+     FROM work_items w
+     LEFT JOIN users u_assignee ON w.assignee_id = u_assignee.id
+     LEFT JOIN users u_creator ON w.created_by = u_creator.id
+     WHERE w.id = $1`,
+    [id]
+  );
+
+  if (itemResult.rowCount === 0) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+    return;
+  }
+
+  const item = itemResult.rows[0];
+
+  // Task 2: Users outside an item's team get 404
+  if (!can(user, 'view', item)) {
+    res.status(404).json({
+      error: 'NOT_FOUND',
+      message: 'Work item not found',
+    });
+    return;
+  }
+
+  const eventsResult = await pool.query(
+    `SELECT a.id, a.item_id, a.actor_id, u.name AS actor_name, a.action, a.details, a.created_at
+     FROM activity_events a
+     LEFT JOIN users u ON a.actor_id = u.id
+     WHERE a.item_id = $1
+     ORDER BY a.created_at ASC`,
+    [id]
+  );
+
+  const commentsResult = await pool.query<Comment>(
+    `SELECT c.id, c.item_id, c.user_id, u.name AS user_name, c.content, c.created_at
+     FROM comments c
+     LEFT JOIN users u ON c.user_id = u.id
+     WHERE c.item_id = $1
+     ORDER BY c.created_at ASC`,
+    [id]
+  );
+
+  res.json({
+    item,
+    activity_events: eventsResult.rows,
+    comments: commentsResult.rows,
+  });
+}
+
+/**
+ * POST /api/items
+ * Create a new work item.
+ */
+export async function createItem(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const { team_id, title, description, priority = 'medium', type = 'task', due_date = null } = req.body;
+
+  if (!team_id || !title || !title.trim()) {
+    res.status(400).json({
+      error: 'VALIDATION_ERROR',
+      message: 'team_id and title are required fields.',
+    });
+    return;
+  }
+
+  // Task 2: Check can(user, 'create', { team_id }). Users outside team get 404.
+  if (!can(user, 'create', { team_id })) {
+    const isMember = user.is_admin || user.memberships.some((m) => m.team_id === team_id);
+    if (!isMember) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Team not found' });
+      return;
+    }
+    res.status(403).json({ error: 'FORBIDDEN', message: 'Viewers cannot create work items.' });
+    return;
+  }
+
+  const itemId = `itm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  const createdItem = await withTransaction(async (client) => {
+    const insertItemResult = await client.query<WorkItem>(
+      `INSERT INTO work_items (id, team_id, title, description, type, status, priority, assignee_id, created_by, due_date, version)
+       VALUES ($1, $2, $3, $4, $5, 'open', $6, NULL, $7, $8, 1)
+       RETURNING *;`,
+      [itemId, team_id, title.trim(), (description || '').trim(), type, priority, user.id, due_date]
+    );
+
+    await client.query(
+      `INSERT INTO activity_events (id, item_id, actor_id, action, details)
+       VALUES ($1, $2, $3, 'created', $4);`,
+      [
+        activityId,
+        itemId,
+        user.id,
+        JSON.stringify({ title, priority, team_id, actor_name: user.name }),
+      ]
+    );
+
+    await client.query(
+      `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
+       VALUES ($1, 'ITEM_CREATED_NOTIFICATION', $2, 'pending', 0, 3, NOW());`,
+      [
+        outboxId,
+        JSON.stringify({
+          item_id: itemId,
+          team_id,
+          title,
+          priority,
+          creator: user.name,
+        }),
+      ]
+    );
+
+    return insertItemResult.rows[0];
+  });
+
+  res.status(201).json({
+    message: 'Work item created successfully',
+    item: createdItem,
+  });
+}
+
+/**
+ * POST /api/items/:id/claim
+ * Claim an unassigned item.
+ */
+export async function claimItem(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const { id } = req.params;
+  const expectedVersion = req.body.expected_version;
+
+  if (typeof expectedVersion !== 'number') {
+    res.status(400).json({
+      error: 'VALIDATION_ERROR',
+      message: 'expected_version (number) is required for optimistic locking.',
+    });
+    return;
+  }
+
+  const currentResult = await pool.query<WorkItem>(
+    'SELECT * FROM work_items WHERE id = $1',
+    [id]
+  );
+
+  if (currentResult.rowCount === 0) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+    return;
+  }
+
+  const currentItem = currentResult.rows[0];
+
+  // Task 2: Users outside an item's team get 404
+  if (!can(user, 'claim', currentItem)) {
+    const isMember = user.is_admin || user.memberships.some((m) => m.team_id === currentItem.team_id);
+    if (!isMember) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+      return;
+    }
+    res.status(403).json({ error: 'FORBIDDEN', message: 'Viewers cannot claim work items.' });
+    return;
+  }
+
+  if (currentItem.assignee_id !== null) {
+    res.status(409).json({
+      error: 'ALREADY_CLAIMED',
+      message: `Item has already been claimed by user '${currentItem.assignee_id}'.`,
+      current_assignee: currentItem.assignee_id,
+    });
+    return;
+  }
+
+  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  try {
+    const updatedItem = await withTransaction(async (client) => {
+      const updateResult = await client.query<WorkItem>(
+        `UPDATE work_items 
+         SET assignee_id = $1, 
+             status = 'in_progress', 
+             version = version + 1, 
+             updated_at = NOW() 
+         WHERE id = $2 
+           AND assignee_id IS NULL 
+           AND version = $3
+         RETURNING *;`,
+        [user.id, id, expectedVersion]
+      );
+
+      if (updateResult.rowCount === 0) {
+        const recheck = await client.query<WorkItem>(
+          'SELECT version, assignee_id FROM work_items WHERE id = $1',
+          [id]
+        );
+        if (recheck.rowCount && recheck.rowCount > 0) {
+          const fresh = recheck.rows[0];
+          if (fresh.assignee_id !== null) {
+            const err: any = new Error('ALREADY_CLAIMED');
+            err.code = 'ALREADY_CLAIMED';
+            err.current_assignee = fresh.assignee_id;
+            throw err;
+          }
+          if (fresh.version !== expectedVersion) {
+            const err: any = new Error('OPTIMISTIC_LOCK_CONFLICT');
+            err.code = 'OPTIMISTIC_LOCK_CONFLICT';
+            err.current_version = fresh.version;
+            throw err;
+          }
+        }
+        throw new Error('CLAIM_FAILED');
+      }
+
+      await client.query(
+        `INSERT INTO activity_events (id, item_id, actor_id, action, details)
+         VALUES ($1, $2, $3, 'claimed', $4);`,
+        [
+          activityId,
+          id,
+          user.id,
+          JSON.stringify({
+            claimed_by: user.id,
+            actor_name: user.name,
+            new_status: 'in_progress',
+          }),
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
+         VALUES ($1, 'ITEM_CLAIMED_NOTIFICATION', $2, 'pending', 0, 3, NOW());`,
+        [
+          outboxId,
+          JSON.stringify({
+            item_id: id,
+            claimed_by: user.name,
+            team_id: currentItem.team_id,
+          }),
+        ]
+      );
+
+      return updateResult.rows[0];
+    });
+
+    res.json({
+      message: 'Item claimed successfully',
+      item: updatedItem,
+    });
+  } catch (err: any) {
+    if (err.code === 'ALREADY_CLAIMED') {
+      res.status(409).json({
+        error: 'ALREADY_CLAIMED',
+        message: 'This item was claimed by another team member.',
+        current_assignee: err.current_assignee,
+      });
+      return;
+    }
+    if (err.code === 'OPTIMISTIC_LOCK_CONFLICT') {
+      res.status(409).json({
+        error: 'OPTIMISTIC_LOCK_CONFLICT',
+        message: 'Item state was updated by another team member. Please refresh.',
+        current_version: err.current_version,
+      });
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * PATCH /api/items/:id
+ * Update item fields with optimistic locking.
+ */
+export async function updateItem(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const { id } = req.params;
+  const { title, description, priority, status, assignee_id, due_date, expected_version } = req.body;
+
+  if (typeof expected_version !== 'number') {
+    res.status(400).json({
+      error: 'VALIDATION_ERROR',
+      message: 'expected_version (number) is required for optimistic locking.',
+    });
+    return;
+  }
+
+  const currentResult = await pool.query<WorkItem>(
+    'SELECT * FROM work_items WHERE id = $1',
+    [id]
+  );
+
+  if (currentResult.rowCount === 0) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+    return;
+  }
+
+  const currentItem = currentResult.rows[0];
+
+  // Task 2: Users outside an item's team get 404
+  if (!can(user, 'update', currentItem)) {
+    const isMember = user.is_admin || user.memberships.some((m) => m.team_id === currentItem.team_id);
+    if (!isMember) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+      return;
+    }
+    res.status(403).json({ error: 'FORBIDDEN', message: 'Viewers cannot modify work items.' });
+    return;
+  }
+
+  const newTitle = title !== undefined ? title.trim() : currentItem.title;
+  const newDescription = description !== undefined ? description.trim() : currentItem.description;
+  const newPriority = priority !== undefined ? priority : currentItem.priority;
+  const newStatus = status !== undefined ? status : currentItem.status;
+  const newAssignee = assignee_id !== undefined ? assignee_id : currentItem.assignee_id;
+  const newDueDate = due_date !== undefined ? due_date : currentItem.due_date;
+
+  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  try {
+    const updatedItem = await withTransaction(async (client) => {
+      const updateResult = await client.query<WorkItem>(
+        `UPDATE work_items 
+         SET title = $1, 
+             description = $2, 
+             priority = $3, 
+             status = $4, 
+             assignee_id = $5,
+             due_date = $6,
+             version = version + 1, 
+             updated_at = NOW() 
+         WHERE id = $7 AND version = $8 
+         RETURNING *;`,
+        [newTitle, newDescription, newPriority, newStatus, newAssignee, newDueDate, id, expected_version]
+      );
+
+      if (updateResult.rowCount === 0) {
+        const fresh = await client.query<WorkItem>(
+          'SELECT version FROM work_items WHERE id = $1',
+          [id]
+        );
+        const err: any = new Error('OPTIMISTIC_LOCK_CONFLICT');
+        err.code = 'OPTIMISTIC_LOCK_CONFLICT';
+        err.current_version = fresh.rows[0]?.version;
+        throw err;
+      }
+
+      await client.query(
+        `INSERT INTO activity_events (id, item_id, actor_id, action, details)
+         VALUES ($1, $2, $3, 'updated', $4);`,
+        [
+          activityId,
+          id,
+          user.id,
+          JSON.stringify({
+            changes: {
+              ...(title !== undefined && { title: newTitle }),
+              ...(description !== undefined && { description: newDescription }),
+              ...(priority !== undefined && { priority: newPriority }),
+              ...(status !== undefined && { status: newStatus }),
+              ...(assignee_id !== undefined && { assignee_id: newAssignee }),
+            },
+            actor_name: user.name,
+          }),
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
+         VALUES ($1, 'ITEM_UPDATED_SYNC', $2, 'pending', 0, 3, NOW());`,
+        [
+          outboxId,
+          JSON.stringify({
+            item_id: id,
+            status: newStatus,
+            priority: newPriority,
+            updated_by: user.name,
+          }),
+        ]
+      );
+
+      return updateResult.rows[0];
+    });
+
+    res.json({
+      message: 'Work item updated successfully',
+      item: updatedItem,
+    });
+  } catch (err: any) {
+    if (err.code === 'OPTIMISTIC_LOCK_CONFLICT') {
+      res.status(409).json({
+        error: 'OPTIMISTIC_LOCK_CONFLICT',
+        message: 'This item was changed by someone else. Reload.',
+        current_version: err.current_version,
+      });
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * POST /api/items/:id/comments
+ * Add a comment to a work item.
+ */
+export async function addComment(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const { id } = req.params;
+  const { content } = req.body;
+
+  if (!content || !content.trim()) {
+    res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Comment content cannot be empty.' });
+    return;
+  }
+
+  const currentResult = await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [id]);
+  if (currentResult.rowCount === 0) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+    return;
+  }
+
+  const currentItem = currentResult.rows[0];
+
+  // Task 2: Users outside an item's team get 404
+  if (!can(user, 'comment', currentItem)) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+    return;
+  }
+
+  const commentId = `cmt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const commentResult = await pool.query<Comment>(
+    `INSERT INTO comments (id, item_id, user_id, content)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *;`,
+    [commentId, id, user.id, content.trim()]
+  );
+
+  const comment = { ...commentResult.rows[0], user_name: user.name };
+  res.status(201).json({ comment });
+}
+
+/**
+ * POST /api/items/:id/resolve
+ * Mark work item as resolved.
+ */
+export async function resolveItem(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const { id } = req.params;
+  const { expected_version, resolution_notes = 'Approved and resolved' } = req.body;
+
+  if (typeof expected_version !== 'number') {
+    res.status(400).json({
+      error: 'VALIDATION_ERROR',
+      message: 'expected_version (number) is required for optimistic locking.',
+    });
+    return;
+  }
+
+  const currentResult = await pool.query<WorkItem>(
+    'SELECT * FROM work_items WHERE id = $1',
+    [id]
+  );
+
+  if (currentResult.rowCount === 0) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+    return;
+  }
+
+  const currentItem = currentResult.rows[0];
+
+  // Task 2: Users outside an item's team get 404
+  if (!can(user, 'resolve', currentItem)) {
+    const isMember = user.is_admin || user.memberships.some((m) => m.team_id === currentItem.team_id);
+    if (!isMember) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+      return;
+    }
+    res.status(403).json({ error: 'FORBIDDEN', message: 'Viewers cannot resolve work items.' });
+    return;
+  }
+
+  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  try {
+    const updatedItem = await withTransaction(async (client) => {
+      const updateResult = await client.query<WorkItem>(
+        `UPDATE work_items 
+         SET status = 'resolved', 
+             version = version + 1, 
+             updated_at = NOW() 
+         WHERE id = $1 AND version = $2 
+         RETURNING *;`,
+        [id, expected_version]
+      );
+
+      if (updateResult.rowCount === 0) {
+        const fresh = await client.query<WorkItem>(
+          'SELECT version FROM work_items WHERE id = $1',
+          [id]
+        );
+        const err: any = new Error('OPTIMISTIC_LOCK_CONFLICT');
+        err.code = 'OPTIMISTIC_LOCK_CONFLICT';
+        err.current_version = fresh.rows[0]?.version;
+        throw err;
+      }
+
+      await client.query(
+        `INSERT INTO activity_events (id, item_id, actor_id, action, details)
+         VALUES ($1, $2, $3, 'resolved', $4);`,
+        [
+          activityId,
+          id,
+          user.id,
+          JSON.stringify({
+            notes: resolution_notes,
+            actor_name: user.name,
+            resolved_at: new Date().toISOString(),
+          }),
+        ]
+      );
+
+      await client.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
+         VALUES ($1, 'ITEM_RESOLVED_NOTIFICATION', $2, 'pending', 0, 3, NOW());`,
+        [
+          outboxId,
+          JSON.stringify({
+            item_id: id,
+            resolved_by: user.name,
+            resolution_notes,
+          }),
+        ]
+      );
+
+      return updateResult.rows[0];
+    });
+
+    res.json({
+      message: 'Work item resolved successfully',
+      item: updatedItem,
+    });
+  } catch (err: any) {
+    if (err.code === 'OPTIMISTIC_LOCK_CONFLICT') {
+      res.status(409).json({
+        error: 'OPTIMISTIC_LOCK_CONFLICT',
+        message: 'This item was changed by someone else. Reload.',
+        current_version: err.current_version,
+      });
+      return;
+    }
+    throw err;
+  }
+}
+
+/**
+ * DELETE /api/items/:id
+ * Delete a work item. Only Leads and Admins can delete.
+ */
+export async function deleteItem(req: Request, res: Response): Promise<void> {
+  const user = req.user!;
+  const { id } = req.params;
+
+  const currentResult = await pool.query<WorkItem>(
+    'SELECT * FROM work_items WHERE id = $1',
+    [id]
+  );
+
+  if (currentResult.rowCount === 0) {
+    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+    return;
+  }
+
+  const currentItem = currentResult.rows[0];
+
+  // Task 2: Users outside an item's team get 404
+  if (!can(user, 'delete', currentItem)) {
+    const isMember = user.is_admin || user.memberships.some((m) => m.team_id === currentItem.team_id);
+    if (!isMember) {
+      res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
+      return;
+    }
+    res.status(403).json({
+      error: 'FORBIDDEN',
+      message: 'Only Team Leads and Administrators can delete work items.',
+    });
+    return;
+  }
+
+  await withTransaction(async (client) => {
+    await client.query('DELETE FROM work_items WHERE id = $1;', [id]);
+  });
+
+  res.json({ message: 'Work item deleted successfully', id });
+}

@@ -1,0 +1,14 @@
+{
+  "name": "workdesk",
+  "version": "1.0.0",
+  "description": "Workdesk Work Items Application",
+  "scripts": {
+    "server": "npm --prefix server run dev",
+    "client": "npm --prefix client run dev",
+    "migrate": "npm --prefix server run migrate",
+    "seed": "npm --prefix server run seed",
+    "worker": "npm --prefix server run worker",
+    "test": "npm --prefix server test",
+    "build": "npm --prefix server run build ; npm --prefix client run build"
+  }
+}

@@ -1,0 +1,51 @@
+services:
+  workdesk-db:
+    image: postgres:16-alpine
+    container_name: workdesk-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: workdesk
+      POSTGRES_PASSWORD: workdesk_secret
+      POSTGRES_DB: workdesk
+    ports:
+      - "5432:5432"
+    volumes:
+      - workdesk_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U workdesk -d workdesk"]
+      interval: 3s
+      timeout: 3s
+      retries: 5
+
+  workdesk-api:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: workdesk-api
+    restart: unless-stopped
+    environment:
+      PORT: 4000
+      DATABASE_URL: postgres://workdesk:workdesk_secret@workdesk-db:5432/workdesk
+      JWT_SECRET: workdesk_production_jwt_secret_key_32_chars_long
+      NODE_ENV: production
+    ports:
+      - "4000:4000"
+    depends_on:
+      workdesk-db:
+        condition: service_healthy
+
+  workdesk-web:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: workdesk-web
+    restart: unless-stopped
+    environment:
+      API_TARGET: http://workdesk-api:4000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - workdesk-api
+
+volumes:
+  workdesk_pgdata:
