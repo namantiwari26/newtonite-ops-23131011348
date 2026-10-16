@@ -20,7 +20,7 @@ export interface WorkItem {
   team_id: string;
   title: string;
   description: string;
-  status: 'open' | 'in_progress' | 'blocked' | 'resolved' | 'closed';
+  status: 'open' | 'in_progress' | 'awaiting_approval' | 'resolved' | 'closed';
   priority: 'low' | 'medium' | 'high' | 'critical';
   assignee_id: string | null;
   assignee_name?: string | null;

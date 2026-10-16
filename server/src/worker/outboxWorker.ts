@@ -36,6 +36,10 @@ async function handleEvent(event: OutboxEvent): Promise<{ success: boolean; resu
       console.log(`[Outbox Worker] Work item ${event.payload.item_id} resolved and archived`);
       return { success: true, result: 'Resolution archived' };
 
+    case 'ITEM_STATUS_TRANSITIONED':
+      console.log(`[Outbox Worker] Work item ${event.payload.item_id} transitioned from ${event.payload.from} to ${event.payload.to}`);
+      return { success: true, result: 'Transition processed' };
+
     case 'SIMULATED_FAILURE_TEST':
       throw new Error('Simulated external service timeout / 503 gateway error');
 

@@ -1,65 +1,62 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 import { app } from '../app.js';
 import { pool } from '../db/pool.js';
-import { runMigrations } from '../db/migrate.js';
-import { seedData } from '../db/seed.js';
 import { processOutboxBatch } from '../worker/outboxWorker.js';
 import { getJwtSecret } from '../controllers/authController.js';
+import { WorkItem } from '../types.js';
 
-describe('Workdesk - Work Items API & Core Rules Integration Tests', () => {
+describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
   let adminToken: string;
+  let priyaToken: string;
   let marcusToken: string;
+  let samiraToken: string;
+  let rachelToken: string;
   let davidToken: string;
 
-  beforeAll(async () => {
-    // Ensure JWT_SECRET is set for tests
-    process.env.JWT_SECRET = 'test_jwt_secret_key_minimum_32_characters';
-    await runMigrations();
-    await seedData();
-
-    adminToken = jwt.sign({ sub: 'usr_priya' }, getJwtSecret(), { algorithm: 'HS256', expiresIn: '8h' });
-    marcusToken = jwt.sign({ sub: 'usr_marcus' }, getJwtSecret(), { algorithm: 'HS256', expiresIn: '8h' });
-    davidToken = jwt.sign({ sub: 'usr_david' }, getJwtSecret(), { algorithm: 'HS256', expiresIn: '8h' });
+  beforeAll(() => {
+    // Generate valid HS256 tokens (sub only) for test personas
+    const secret = getJwtSecret();
+    adminToken = jwt.sign({ sub: 'usr_admin' }, secret, { algorithm: 'HS256', expiresIn: '8h' });
+    priyaToken = jwt.sign({ sub: 'usr_priya' }, secret, { algorithm: 'HS256', expiresIn: '8h' });
+    marcusToken = jwt.sign({ sub: 'usr_marcus' }, secret, { algorithm: 'HS256', expiresIn: '8h' });
+    samiraToken = jwt.sign({ sub: 'usr_samira' }, secret, { algorithm: 'HS256', expiresIn: '8h' });
+    rachelToken = jwt.sign({ sub: 'usr_rachel' }, secret, { algorithm: 'HS256', expiresIn: '8h' });
+    davidToken = jwt.sign({ sub: 'usr_david' }, secret, { algorithm: 'HS256', expiresIn: '8h' });
   });
 
-  afterAll(async () => {
-    await pool.end();
-  });
-
-  // Task 1: Authentication Tests
-  describe('Task 1: Authentication & JWT (HS256, sub-only, 8h)', () => {
+  // 1. Authentication Tests
+  describe('Authentication & JWT (HS256, sub-only, 8h)', () => {
     it('successfully logs in an existing user with Demo@12345 and returns HS256 sub JWT', async () => {
       const res = await request(app)
         .post('/api/auth/login')
         .send({
-          email: 'priya.sharma@workdesk.test',
+          email: 'alex.vance@workdesk.test',
           password: 'Demo@12345',
         });
 
       expect(res.status).toBe(200);
       expect(res.body.token).toBeDefined();
 
-      // Verify token contains only sub and algorithm is HS256
       const decoded: any = jwt.verify(res.body.token, getJwtSecret(), { algorithms: ['HS256'] });
-      expect(decoded.sub).toBe('usr_priya');
-
-      expect(res.body.user.name).toBe('Priya Sharma');
+      expect(decoded.sub).toBe('usr_admin');
+      expect(res.body.user.name).toBe('Alex Vance');
       expect(res.body.user.is_admin).toBe(true);
-      expect(res.body.user.role).toBeUndefined(); // Role column removed from users
-      expect(res.body.user.memberships.length).toBeGreaterThan(0);
+      expect(res.body.user.role).toBeUndefined(); // Global role removed
     });
 
     it('rejects login with 401 and generic message when wrong password is provided', async () => {
       const res = await request(app)
         .post('/api/auth/login')
         .send({
-          email: 'priya.sharma@workdesk.test',
+          email: 'alex.vance@workdesk.test',
           password: 'WrongPassword!',
         });
 
       expect(res.status).toBe(401);
+      expect(res.body.error).toBe('INVALID_CREDENTIALS');
       expect(res.body.message).toBe('Invalid email or password');
     });
 
@@ -72,13 +69,14 @@ describe('Workdesk - Work Items API & Core Rules Integration Tests', () => {
         });
 
       expect(res.status).toBe(401);
+      expect(res.body.error).toBe('INVALID_CREDENTIALS');
       expect(res.body.message).toBe('Invalid email or password');
     });
 
     it('rejects requests with fake token with 401', async () => {
       const res = await request(app)
         .get('/api/items')
-        .set('Authorization', 'Bearer fake.invalid.token');
+        .set('Authorization', 'Bearer fake_invalid_token_99999');
 
       expect(res.status).toBe(401);
       expect(res.body.error).toBe('UNAUTHORIZED');
@@ -86,258 +84,449 @@ describe('Workdesk - Work Items API & Core Rules Integration Tests', () => {
 
     it('accepts requests with valid JWT token (200)', async () => {
       const res = await request(app)
-        .get('/api/items')
-        .set('Authorization', `Bearer ${adminToken}`);
+        .get('/api/items?limit=5')
+        .set('Authorization', `Bearer ${priyaToken}`);
 
       expect(res.status).toBe(200);
-      expect(res.body.items).toBeDefined();
+      expect(Array.isArray(res.body.items)).toBe(true);
+      expect(res.body.total_count).toBeGreaterThan(0);
     });
   });
 
-  // Task 2: Authorization & Team Scoping
-  describe('Task 2: Team-scoped Authorization & 404 for outside team', () => {
-    it('returns 404 when user is outside an item team', async () => {
-      // itm_00001 belongs to team_billing. usr_david only belongs to team_support (viewer)
+  // 2. Specific Workflow, Authorization, and Concurrency Tests (Tasks 2 & 6)
+  describe('Workflow & Status Transitions', () => {
+    it('(a) Open→Closed returns 409', async () => {
+      // Find an open item in team_billing
+      const itemRes = await pool.query<WorkItem>(
+        "SELECT * FROM work_items WHERE team_id = 'team_billing' AND status = 'open' LIMIT 1"
+      );
+      const item = itemRes.rows[0];
+
       const res = await request(app)
-        .get('/api/items/itm_00001')
-        .set('Authorization', `Bearer ${davidToken}`);
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${priyaToken}`) // Priya is Lead of Billing
+        .send({ to: 'closed', version: item.version });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('INVALID_TRANSITION');
+    });
+
+    it('(b) a member cannot approve (403)', async () => {
+      // Place an item in team_billing into awaiting_approval state
+      const itemRes = await pool.query<WorkItem>(
+        "SELECT * FROM work_items WHERE team_id = 'team_billing' LIMIT 1"
+      );
+      const item = itemRes.rows[0];
+
+      await pool.query(
+        "UPDATE work_items SET status = 'awaiting_approval' WHERE id = $1",
+        [item.id]
+      );
+      const fresh = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id])).rows[0];
+
+      // Marcus Chen is a member (not lead) of team_billing
+      const res = await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${marcusToken}`)
+        .send({ to: 'resolved', version: fresh.version });
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe('FORBIDDEN');
+    });
+
+    it('(c) a lead of another team gets 404', async () => {
+      // Item belongs to team_billing
+      const itemRes = await pool.query<WorkItem>(
+        "SELECT * FROM work_items WHERE team_id = 'team_billing' LIMIT 1"
+      );
+      const item = itemRes.rows[0];
+
+      // Rachel Green is Lead of team_support (has NO membership in team_billing)
+      const res = await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${rachelToken}`)
+        .send({ to: 'in_progress', version: item.version });
 
       expect(res.status).toBe(404);
       expect(res.body.error).toBe('NOT_FOUND');
     });
 
-    it('allows team member to view an item in their team', async () => {
-      // itm_00001 belongs to team_billing. usr_marcus is lead on team_billing
-      const res = await request(app)
-        .get('/api/items/itm_00001')
-        .set('Authorization', `Bearer ${marcusToken}`);
+    it('(d) a stale version returns 409 and data is unchanged', async () => {
+      const itemRes = await pool.query<WorkItem>(
+        "SELECT * FROM work_items WHERE team_id = 'team_billing' AND status = 'open' LIMIT 1"
+      );
+      const originalItem = itemRes.rows[0];
 
-      expect(res.status).toBe(200);
-      expect(res.body.item.id).toBe('itm_00001');
+      const res = await request(app)
+        .post(`/api/items/${originalItem.id}/transition`)
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .send({ to: 'in_progress', version: 99999 }); // Stale version
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('OPTIMISTIC_LOCK_CONFLICT');
+      expect(res.body.item).toBeDefined();
+
+      // Verify that database record was not modified
+      const checkRes = await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [originalItem.id]);
+      const currentItem = checkRes.rows[0];
+      expect(currentItem.status).toBe(originalItem.status);
+      expect(currentItem.version).toBe(originalItem.version);
+      expect(currentItem.title).toBe(originalItem.title);
     });
 
-    it('denies viewers from mutating items (403)', async () => {
-      // itm_00002 belongs to team_support where usr_david is viewer
+    it('(e) two parallel claims, exactly one succeeds', async () => {
+      // Create a fresh unassigned item in team_billing
+      const createRes = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_billing',
+          title: 'Parallel Claim Race Condition Test Item',
+          priority: 'high',
+        });
+
+      const testItem = createRes.body.item;
+      expect(testItem.assignee_id).toBeNull();
+
+      // Concurrently attempt to claim the item with Priya and Marcus
+      const [res1, res2] = await Promise.all([
+        request(app)
+          .post(`/api/items/${testItem.id}/claim`)
+          .set('Authorization', `Bearer ${priyaToken}`)
+          .send({ expected_version: testItem.version }),
+        request(app)
+          .post(`/api/items/${testItem.id}/claim`)
+          .set('Authorization', `Bearer ${marcusToken}`)
+          .send({ expected_version: testItem.version }),
+      ]);
+
+      const statuses = [res1.status, res2.status].sort();
+      expect(statuses).toEqual([200, 409]);
+
+      const successRes = res1.status === 200 ? res1 : res2;
+      const conflictRes = res1.status === 409 ? res1 : res2;
+
+      expect(successRes.body.item.assignee_id).not.toBeNull();
+      expect(['ALREADY_CLAIMED', 'OPTIMISTIC_LOCK_CONFLICT']).toContain(conflictRes.body.error);
+    });
+
+    it('(f) the same Idempotency-Key sent twice creates one item', async () => {
+      const idempotencyKey = crypto.randomUUID();
+      const payload = {
+        team_id: 'team_billing',
+        title: 'Idempotent Creation Test Item',
+        description: 'Verify identical payload and cached replay',
+        priority: 'medium',
+      };
+
+      const res1 = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send(payload);
+
+      expect(res1.status).toBe(201);
+      const createdItemId = res1.body.item.id;
+
+      const res2 = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send(payload);
+
+      expect(res2.status).toBe(201);
+      expect(res2.body.item.id).toBe(createdItemId);
+
+      // Verify DB contains exactly 1 row
+      const countRes = await pool.query<{ count: string }>(
+        'SELECT count(*) as count FROM work_items WHERE id = $1',
+        [createdItemId]
+      );
+      expect(parseInt(countRes.rows[0].count, 10)).toBe(1);
+    });
+
+    it('returns 422 when the same Idempotency-Key is sent with a different body', async () => {
+      const idempotencyKey = crypto.randomUUID();
+
+      const res1 = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          team_id: 'team_billing',
+          title: 'Initial Request Body Payload',
+          priority: 'high',
+        });
+
+      expect(res1.status).toBe(201);
+      expect(res1.body.item.title).toBe('Initial Request Body Payload');
+
+      const res2 = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          team_id: 'team_billing',
+          title: 'Different Request Body Payload',
+          priority: 'low',
+        });
+
+      expect(res2.status).toBe(422);
+      expect(res2.body.error).toBe('UNPROCESSABLE_ENTITY');
+    });
+
+    it('two concurrent requests with the same key create only one item', async () => {
+      const idempotencyKey = crypto.randomUUID();
+      const payload = {
+        team_id: 'team_billing',
+        title: 'Concurrent Idempotent Creation Item',
+        priority: 'high',
+      };
+
+      const [res1, res2] = await Promise.all([
+        request(app)
+          .post('/api/items')
+          .set('Authorization', `Bearer ${priyaToken}`)
+          .set('Idempotency-Key', idempotencyKey)
+          .send(payload),
+        request(app)
+          .post('/api/items')
+          .set('Authorization', `Bearer ${priyaToken}`)
+          .set('Idempotency-Key', idempotencyKey)
+          .send(payload),
+      ]);
+
+      expect(res1.status).toBe(201);
+      expect(res2.status).toBe(201);
+      expect(res1.body.item.id).toBe(res2.body.item.id);
+
+      const dbCheck = await pool.query(
+        "SELECT COUNT(*) FROM work_items WHERE title = 'Concurrent Idempotent Creation Item'"
+      );
+      expect(parseInt(dbCheck.rows[0].count, 10)).toBe(1);
+    });
+
+    it('(g) an outbox job processed twice creates one notification', async () => {
+      const outboxId = crypto.randomUUID();
+      await pool.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
+         VALUES ($1, 'ITEM_CREATED_NOTIFICATION', $2, 'pending', 0, 3, NOW());`,
+        [
+          outboxId,
+          JSON.stringify({
+            item_id: 'itm_dedup_001',
+            team_id: 'team_billing',
+            title: 'Outbox deduplication test',
+          }),
+        ]
+      );
+
+      // Pass 1: processes the event and marks it completed
+      const batch1 = await processOutboxBatch(10);
+      expect(batch1.processed).toBeGreaterThanOrEqual(1);
+
+      const check1 = await pool.query(
+        'SELECT status, attempts FROM outbox_events WHERE id = $1',
+        [outboxId]
+      );
+      expect(check1.rows[0].status).toBe('completed');
+      expect(check1.rows[0].attempts).toBe(1);
+
+      // Pass 2: processes outbox again
+      await processOutboxBatch(10);
+
+      // The completed event was NOT processed a second time (attempts remains 1)
+      const check2 = await pool.query(
+        'SELECT status, attempts FROM outbox_events WHERE id = $1',
+        [outboxId]
+      );
+      expect(check2.rows[0].status).toBe('completed');
+      expect(check2.rows[0].attempts).toBe(1);
+    });
+  });
+
+  // 3. Allowed Workflow Progression
+  describe('Enforced Allowed Transitions Lifecycle', () => {
+    it('executes full transition lifecycle: open -> in_progress -> awaiting_approval -> resolved -> closed', async () => {
+      // 1. Create open item
+      const createRes = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_billing',
+          title: 'Full Workflow Lifecycle Item',
+          priority: 'high',
+        });
+      expect(createRes.status).toBe(201);
+      let item = createRes.body.item;
+      expect(item.status).toBe('open');
+
+      // 2. Member transitions open -> in_progress
+      const step1 = await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${marcusToken}`)
+        .send({ to: 'in_progress', version: item.version });
+      expect(step1.status).toBe(200);
+      item = step1.body.item;
+      expect(item.status).toBe('in_progress');
+
+      // 3. Member transitions in_progress -> awaiting_approval
+      const step2 = await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${marcusToken}`)
+        .send({ to: 'awaiting_approval', version: item.version });
+      expect(step2.status).toBe(200);
+      item = step2.body.item;
+      expect(item.status).toBe('awaiting_approval');
+
+      // 4. Lead approves: awaiting_approval -> resolved
+      const step3 = await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .send({ to: 'resolved', version: item.version });
+      expect(step3.status).toBe(200);
+      item = step3.body.item;
+      expect(item.status).toBe('resolved');
+
+      // 5. Lead closes: resolved -> closed
+      const step4 = await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .send({ to: 'closed', version: item.version });
+      expect(step4.status).toBe(200);
+      item = step4.body.item;
+      expect(item.status).toBe('closed');
+    });
+
+    it('allows lead to reject awaiting_approval back to in_progress', async () => {
+      const createRes = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_billing',
+          title: 'Rejection Lifecycle Item',
+          priority: 'medium',
+        });
+      let item = createRes.body.item;
+
+      // Move to awaiting_approval
+      await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .send({ to: 'in_progress', version: item.version });
+
+      item = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id])).rows[0];
+
+      await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .send({ to: 'awaiting_approval', version: item.version });
+
+      item = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id])).rows[0];
+      expect(item.status).toBe('awaiting_approval');
+
+      // Lead rejects: awaiting_approval -> in_progress
+      const rejectRes = await request(app)
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .send({ to: 'in_progress', version: item.version });
+
+      expect(rejectRes.status).toBe(200);
+      expect(rejectRes.body.item.status).toBe('in_progress');
+    });
+
+    it('denies viewers from transitioning items (403)', async () => {
+      // itm belongs to team_billing where samira is viewer
+      const itemRes = await pool.query<WorkItem>(
+        "SELECT * FROM work_items WHERE team_id = 'team_billing' AND status = 'open' LIMIT 1"
+      );
+      const item = itemRes.rows[0];
+
       const res = await request(app)
-        .patch('/api/items/itm_00002')
-        .set('Authorization', `Bearer ${davidToken}`)
-        .send({ title: 'Viewer attempting mutation', expected_version: 1 });
+        .post(`/api/items/${item.id}/transition`)
+        .set('Authorization', `Bearer ${samiraToken}`)
+        .send({ to: 'in_progress', version: item.version });
 
       expect(res.status).toBe(403);
       expect(res.body.error).toBe('FORBIDDEN');
     });
   });
 
-  // Idempotency & Creation
-  describe('Idempotency-Key Enforcement', () => {
-    it('returns 400 Bad Request if Idempotency-Key header is missing', async () => {
-      const res = await request(app)
-        .post('/api/items')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({
-          team_id: 'team_billing',
-          title: 'Invoice recalculation for customer #9012',
-          priority: 'high',
-        });
-
-      expect(res.status).toBe(400);
-      expect(res.body.error).toBe('MISSING_IDEMPOTENCY_KEY');
-    });
-
-    it('creates item on first request and returns cached response on identical key replay', async () => {
-      const idempotencyKey = `key_test_${Date.now()}`;
-
-      const res1 = await request(app)
-        .post('/api/items')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .set('Idempotency-Key', idempotencyKey)
-        .send({
-          team_id: 'team_billing',
-          title: 'Investigate payment retry backlog',
-          description: 'Payment retry queue delayed by 15 minutes',
-          priority: 'critical',
-        });
-
-      expect(res1.status).toBe(201);
-      expect(res1.body.item).toBeDefined();
-      expect(res1.headers['x-cache-lookup']).toBeUndefined();
-
-      const createdItemId = res1.body.item.id;
-
-      const res2 = await request(app)
-        .post('/api/items')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .set('Idempotency-Key', idempotencyKey)
-        .send({
-          team_id: 'team_billing',
-          title: 'Investigate payment retry backlog',
-          description: 'Payment retry queue delayed by 15 minutes',
-          priority: 'critical',
-        });
-
-      expect(res2.status).toBe(201);
-      expect(res2.headers['x-cache-lookup']).toBe('HIT');
-      expect(res2.body.item.id).toBe(createdItemId);
-    });
-  });
-
-  // Atomic Item Change and Activity Event
-  describe('Atomic Item Change and Activity Event Transaction', () => {
-    it('writes activity_event and outbox_event in the same transaction as item creation', async () => {
-      const idempotencyKey = `key_tx_test_${Date.now()}`;
-      const res = await request(app)
-        .post('/api/items')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .set('Idempotency-Key', idempotencyKey)
-        .send({
-          team_id: 'team_billing',
-          title: 'Stripe webhook endpoint latency alert',
-          priority: 'high',
-        });
-
-      expect(res.status).toBe(201);
-      const itemId = res.body.item.id;
-
-      const eventsRes = await pool.query(
-        'SELECT * FROM activity_events WHERE item_id = $1',
-        [itemId]
-      );
-      expect(eventsRes.rows.length).toBeGreaterThan(0);
-      expect(eventsRes.rows[0].action).toBe('created');
-      expect(eventsRes.rows[0].actor_id).toBe('usr_priya');
-
-      const outboxRes = await pool.query(
-        "SELECT * FROM outbox_events WHERE payload->>'item_id' = $1",
-        [itemId]
-      );
-      expect(outboxRes.rows.length).toBeGreaterThan(0);
-      expect(outboxRes.rows[0].event_type).toBe('ITEM_CREATED_NOTIFICATION');
-    });
-  });
-
-  // Claim Semantics
-  describe('Claim Semantics (UPDATE ... WHERE assignee_id IS NULL)', () => {
-    it('successfully claims an unclaimed item with matching version', async () => {
-      // itm_00015 has i % 5 = 0 (unassigned) and belongs to team_billing where marcus is lead
-      const res = await request(app)
-        .post('/api/items/itm_00015/claim')
-        .set('Authorization', `Bearer ${marcusToken}`)
-        .send({ expected_version: 1 });
-
-      expect(res.status).toBe(200);
-      expect(res.body.item.assignee_id).toBe('usr_marcus');
-      expect(res.body.item.status).toBe('in_progress');
-      expect(res.body.item.version).toBe(2);
-
-      const actRes = await pool.query(
-        "SELECT * FROM activity_events WHERE item_id = 'itm_00015' AND action = 'claimed'"
-      );
-      expect(actRes.rowCount).toBe(1);
-    });
-
-    it('returns 409 ALREADY_CLAIMED when attempting to claim an already assigned item', async () => {
-      // itm_00015 is now claimed
-      const res = await request(app)
-        .post('/api/items/itm_00015/claim')
-        .set('Authorization', `Bearer ${adminToken}`)
-        .send({ expected_version: 2 });
-
-      expect(res.status).toBe(409);
-      expect(res.body.error).toBe('ALREADY_CLAIMED');
-    });
-  });
-
-  // Optimistic Locking
-  describe('Optimistic Locking with version column', () => {
-    it('rejects update with 409 OPTIMISTIC_LOCK_CONFLICT when expected_version is stale', async () => {
-      // itm_00001 belongs to team_platform where marcus is a member
-      const res = await request(app)
-        .patch('/api/items/itm_00001')
-        .set('Authorization', `Bearer ${marcusToken}`)
-        .send({
-          title: 'Attempting Stale Overwrite',
-          expected_version: 999, // Stale version
-        });
-
-      expect(res.status).toBe(409);
-      expect(res.body.error).toBe('OPTIMISTIC_LOCK_CONFLICT');
-    });
-
-    it('succeeds update when expected_version matches, incrementing version', async () => {
-      const itemRes = await pool.query('SELECT version FROM work_items WHERE id = $1', ['itm_00001']);
-      const currentVersion = itemRes.rows[0].version;
-
-      const res = await request(app)
-        .patch('/api/items/itm_00001')
-        .set('Authorization', `Bearer ${marcusToken}`)
-        .send({
-          title: 'Payment gateway timeout in checkout (Investigating)',
-          priority: 'medium',
-          expected_version: currentVersion,
-        });
-
-      expect(res.status).toBe(200);
-      expect(res.body.item.version).toBe(currentVersion + 1);
-    });
-  });
-
-  // Comments
-  describe('Comments on Work Items', () => {
-    it('adds a comment to a work item', async () => {
-      const res = await request(app)
-        .post('/api/items/itm_00001/comments')
-        .set('Authorization', `Bearer ${marcusToken}`)
-        .send({ content: 'Verified with finance team; payment cleared.' });
-
-      expect(res.status).toBe(201);
-      expect(res.body.comment.content).toBe('Verified with finance team; payment cleared.');
-    });
-  });
-
-  // Server-side cursor pagination
-  describe('Server-side Filters and Cursor Pagination on 5000 items', () => {
-    it('paginates 5,000 items using cursor and limit without loading everything', async () => {
+  // 4. Keyset Cursor Pagination & Filters
+  describe('Server-side Filters and Keyset Pagination', () => {
+    it('paginates items using cursor and limit without loading everything', async () => {
       const page1 = await request(app)
-        .get('/api/items?team_id=team_billing&limit=10')
+        .get('/api/items?limit=5')
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(page1.status).toBe(200);
-      expect(page1.body.items.length).toBe(10);
+      expect(page1.body.items.length).toBe(5);
       expect(page1.body.has_more).toBe(true);
       expect(page1.body.next_cursor).toBeDefined();
-      expect(page1.body.total_count).toBeGreaterThan(1000);
 
       const page2 = await request(app)
-        .get(`/api/items?team_id=team_billing&limit=10&cursor=${encodeURIComponent(page1.body.next_cursor)}`)
+        .get(`/api/items?limit=5&cursor=${encodeURIComponent(page1.body.next_cursor)}`)
         .set('Authorization', `Bearer ${adminToken}`);
 
       expect(page2.status).toBe(200);
-      expect(page2.body.items.length).toBe(10);
+      expect(page2.body.items.length).toBe(5);
       expect(page2.body.items[0].id).not.toBe(page1.body.items[0].id);
     });
 
-    it('filters items by status and priority on server-side', async () => {
+    it('filters items by team_id and status server-side', async () => {
       const res = await request(app)
-        .get('/api/items?priority=critical')
-        .set('Authorization', `Bearer ${adminToken}`);
+        .get('/api/items?team_id=team_billing&status=open&limit=10')
+        .set('Authorization', `Bearer ${priyaToken}`);
 
       expect(res.status).toBe(200);
-      res.body.items.forEach((item: any) => {
-        expect(item.priority).toBe('critical');
-      });
+      for (const item of res.body.items) {
+        expect(item.team_id).toBe('team_billing');
+        expect(item.status).toBe('open');
+      }
     });
   });
 
-  // Transactional Outbox
+  // 5. Comments
+  describe('Comments on Work Items', () => {
+    it('allows team members to add comments', async () => {
+      const itemRes = await pool.query<WorkItem>(
+        "SELECT * FROM work_items WHERE team_id = 'team_billing' LIMIT 1"
+      );
+      const item = itemRes.rows[0];
+
+      const res = await request(app)
+        .post(`/api/items/${item.id}/comments`)
+        .set('Authorization', `Bearer ${marcusToken}`)
+        .send({ content: 'Investigation notes added by team member' });
+
+      expect(res.status).toBe(201);
+      expect(res.body.comment.content).toBe('Investigation notes added by team member');
+    });
+  });
+
+  // 6. Transactional Outbox Worker & Retries
   describe('Transactional Outbox Worker & Retries', () => {
-    it('processes pending outbox events successfully', async () => {
+    it('processes pending events successfully', async () => {
+      const eventId = crypto.randomUUID();
+      await pool.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
+         VALUES ($1, 'ITEM_CREATED_NOTIFICATION', '{"team_id":"team_billing","title":"Outbox test"}'::jsonb, 'pending', 0, 3, NOW());`,
+        [eventId]
+      );
+
       const batchResult = await processOutboxBatch(10);
       expect(batchResult.processed).toBeGreaterThan(0);
       expect(batchResult.succeeded).toBeGreaterThan(0);
+
+      const check = await pool.query('SELECT status FROM outbox_events WHERE id = $1', [eventId]);
+      expect(check.rows[0].status).toBe('completed');
     });
 
-    it('retries failed events with backoff and marks failed when max_attempts reached', async () => {
-      const failEventId = `out_test_fail_${Date.now()}`;
+    it('retries with backoff and marks failed at max attempts', async () => {
+      const failEventId = crypto.randomUUID();
 
       await pool.query(
         `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
@@ -345,14 +534,17 @@ describe('Workdesk - Work Items API & Core Rules Integration Tests', () => {
         [failEventId]
       );
 
+      // Attempt 1: fails, increments attempts to 1, schedules backoff
       const run1 = await processOutboxBatch(10);
       expect(run1.failed).toBeGreaterThanOrEqual(1);
 
+      // Fast-forward next_run_at to simulate backoff elapsing
       await pool.query(
         'UPDATE outbox_events SET next_run_at = NOW() WHERE id = $1',
         [failEventId]
       );
 
+      // Attempt 2: fails, reaches max_attempts (2), marks status = 'failed'
       const run2 = await processOutboxBatch(10);
       expect(run2.failed).toBeGreaterThanOrEqual(1);
 

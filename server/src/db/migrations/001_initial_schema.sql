@@ -77,12 +77,14 @@ CREATE INDEX IF NOT EXISTS idx_comments_item ON comments (item_id, created_at AS
 
 -- 7. Idempotency keys table
 CREATE TABLE IF NOT EXISTS idempotency_keys (
-  key VARCHAR(255) PRIMARY KEY,
+  key VARCHAR(255) NOT NULL,
   user_id VARCHAR(50) NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  endpoint VARCHAR(255) NOT NULL,
-  status_code INT NOT NULL,
-  response_body JSONB NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  endpoint VARCHAR(255),
+  request_hash VARCHAR(64) NOT NULL,
+  status_code INT,
+  response_body JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT uq_idempotency_user_key UNIQUE (user_id, key)
 );
 
 CREATE INDEX IF NOT EXISTS idx_idempotency_created ON idempotency_keys (created_at);

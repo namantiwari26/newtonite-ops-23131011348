@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import crypto from 'crypto';
 import { authMiddleware } from './middleware/auth.js';
 import { requireIdempotency } from './middleware/idempotency.js';
 import {
@@ -9,6 +10,7 @@ import {
   claimItem,
   updateItem,
   resolveItem,
+  transitionItem,
   deleteItem,
   addComment,
 } from './controllers/itemsController.js';
@@ -74,6 +76,7 @@ apiRouter.post('/items', requireIdempotency, createItem);
 // Work item mutations
 apiRouter.patch('/items/:id', updateItem);
 apiRouter.post('/items/:id/claim', claimItem);
+apiRouter.post('/items/:id/transition', transitionItem);
 apiRouter.post('/items/:id/resolve', resolveItem);
 apiRouter.post('/items/:id/comments', addComment);
 apiRouter.delete('/items/:id', deleteItem);
@@ -98,7 +101,7 @@ apiRouter.post('/outbox/process', async (_req, res) => {
 });
 
 apiRouter.post('/outbox/simulate-failure', async (_req, res) => {
-  const id = `out_fail_${Date.now()}`;
+  const id = crypto.randomUUID();
   await pool.query(
     `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
      VALUES ($1, 'SIMULATED_FAILURE_TEST', $2, 'pending', 0, 3, NOW());`,

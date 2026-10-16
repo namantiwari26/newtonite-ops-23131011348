@@ -162,21 +162,26 @@ export async function updateItem(
   );
 }
 
+export async function transitionItem(
+  id: string,
+  to: string,
+  version: number
+): Promise<{ item: WorkItem }> {
+  return apiFetch<{ item: WorkItem }>(
+    `/items/${id}/transition`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ to, version }),
+    }
+  );
+}
+
 export async function resolveItem(
   id: string,
   expectedVersion: number,
-  resolutionNotes: string = 'Approved and resolved'
+  _resolutionNotes: string = 'Approved and resolved'
 ): Promise<{ item: WorkItem }> {
-  return apiFetch<{ item: WorkItem }>(
-    `/items/${id}/resolve`,
-    {
-      method: 'POST',
-      body: JSON.stringify({
-        expected_version: expectedVersion,
-        resolution_notes: resolutionNotes,
-      }),
-    }
-  );
+  return transitionItem(id, 'resolved', expectedVersion);
 }
 
 export async function addComment(

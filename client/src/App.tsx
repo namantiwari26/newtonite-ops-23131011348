@@ -7,8 +7,7 @@ import {
   fetchItemDetail,
   createItem,
   claimItem,
-  updateItem,
-  resolveItem,
+  transitionItem,
   addComment,
 } from './api.js';
 import { User, WorkItem } from './types.js';
@@ -155,42 +154,24 @@ export function App() {
     },
   });
 
-  const updateStatusMutation = useMutation({
-    mutationFn: ({ item, status }: { item: WorkItem; status: string }) =>
-      updateItem(item.id, {
-        status,
-        expected_version: item.version,
-      }),
-    onSuccess: () => {
-      setConflictError(null);
-      queryClient.invalidateQueries({ queryKey: ['items'] });
-      queryClient.invalidateQueries({ queryKey: ['item-detail', selectedItemId] });
-    },
-    onError: (err: any) => {
-      if (err.code === 'OPTIMISTIC_LOCK_CONFLICT') {
-        setConflictError('This item was changed by someone else. Reload.');
-      } else {
-        setConflictError(err.message || 'Failed to update status');
-      }
-      queryClient.invalidateQueries({ queryKey: ['items'] });
-    },
-  });
 
-  const approveMutation = useMutation({
-    mutationFn: (item: WorkItem) =>
-      resolveItem(item.id, item.version, 'Approved by team member'),
+
+  const transitionMutation = useMutation({
+    mutationFn: ({ item, to }: { item: WorkItem; to: string }) =>
+      transitionItem(item.id, to, item.version),
     onSuccess: () => {
       setConflictError(null);
       queryClient.invalidateQueries({ queryKey: ['items'] });
       queryClient.invalidateQueries({ queryKey: ['item-detail', selectedItemId] });
     },
     onError: (err: any) => {
-      if (err.code === 'OPTIMISTIC_LOCK_CONFLICT') {
-        setConflictError('This item was changed by someone else. Reload.');
+      if (err.status === 409 || err.code === 'OPTIMISTIC_LOCK_CONFLICT' || err.code === 'INVALID_TRANSITION') {
+        setConflictError(err.message || 'This item was changed by someone else. Reload.');
       } else {
-        setConflictError(err.message || 'Failed to approve item');
+        setConflictError(err.message || 'Failed to transition item');
       }
       queryClient.invalidateQueries({ queryKey: ['items'] });
+      queryClient.invalidateQueries({ queryKey: ['item-detail', selectedItemId] });
     },
   });
 
@@ -303,11 +284,8 @@ export function App() {
               onClaim={async (it) => {
                 await claimMutation.mutateAsync(it);
               }}
-              onStatusChange={async (it, st) => {
-                await updateStatusMutation.mutateAsync({ item: it, status: st });
-              }}
-              onApprove={async (it) => {
-                await approveMutation.mutateAsync(it);
+              onTransition={async (it, to) => {
+                await transitionMutation.mutateAsync({ item: it, to });
               }}
               onAddComment={async (itemId, content) => {
                 await addCommentMutation.mutateAsync({ itemId, content });
@@ -320,8 +298,7 @@ export function App() {
               }}
               isActionPending={
                 claimMutation.isPending ||
-                updateStatusMutation.isPending ||
-                approveMutation.isPending
+                transitionMutation.isPending
               }
             />
           )}

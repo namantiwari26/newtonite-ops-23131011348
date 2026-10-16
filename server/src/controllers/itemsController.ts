@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { Request, Response } from 'express';
 import { pool, withTransaction } from '../db/pool.js';
 import { can } from '../auth/can.js';
@@ -247,9 +248,9 @@ export async function createItem(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const itemId = `itm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const itemId = crypto.randomUUID();
+  const activityId = crypto.randomUUID();
+  const outboxId = crypto.randomUUID();
 
   const createdItem = await withTransaction(async (client) => {
     const insertItemResult = await client.query<WorkItem>(
@@ -343,8 +344,8 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const activityId = crypto.randomUUID();
+  const outboxId = crypto.randomUUID();
 
   try {
     const updatedItem = await withTransaction(async (client) => {
@@ -487,8 +488,8 @@ export async function updateItem(req: Request, res: Response): Promise<void> {
   const newAssignee = assignee_id !== undefined ? assignee_id : currentItem.assignee_id;
   const newDueDate = due_date !== undefined ? due_date : currentItem.due_date;
 
-  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const activityId = crypto.randomUUID();
+  const outboxId = crypto.randomUUID();
 
   try {
     const updatedItem = await withTransaction(async (client) => {
@@ -600,7 +601,7 @@ export async function addComment(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const commentId = `cmt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+  const commentId = crypto.randomUUID();
   const commentResult = await pool.query<Comment>(
     `INSERT INTO comments (id, item_id, user_id, content)
      VALUES ($1, $2, $3, $4)
@@ -612,96 +613,152 @@ export async function addComment(req: Request, res: Response): Promise<void> {
   res.status(201).json({ comment });
 }
 
+export const ALLOWED_TRANSITIONS: Record<string, string[]> = {
+  open: ['in_progress'],
+  in_progress: ['awaiting_approval'],
+  awaiting_approval: ['resolved', 'in_progress'],
+  resolved: ['closed', 'in_progress'],
+  closed: [],
+};
+
 /**
- * POST /api/items/:id/resolve
- * Mark work item as resolved.
+ * POST /api/items/:id/transition
+ * Body: { to: string, version: number }
+ * 
+ * Enforces allowed-transitions map.
+ * Members move items up to awaiting_approval.
+ * Only Leads of that item's team (or Admins) can approve (awaiting_approval -> resolved) or reject (awaiting_approval -> in_progress).
+ * In one transaction: UPDATE ... WHERE id=$2 AND version=$3, activity_events row (actor, from, to), and outbox job.
+ * 0 rows updated returns 409 with the latest item.
  */
-export async function resolveItem(req: Request, res: Response): Promise<void> {
+export async function transitionItem(req: Request, res: Response): Promise<void> {
   const user = req.user!;
   const { id } = req.params;
-  const { expected_version, resolution_notes = 'Approved and resolved' } = req.body;
+  const { to } = req.body;
+  const version = typeof req.body.version === 'number' ? req.body.version : req.body.expected_version;
 
-  if (typeof expected_version !== 'number') {
+  if (typeof version !== 'number' || !to || typeof to !== 'string') {
     res.status(400).json({
       error: 'VALIDATION_ERROR',
-      message: 'expected_version (number) is required for optimistic locking.',
+      message: 'to (string) and version (number) are required.',
     });
     return;
   }
 
-  const currentResult = await pool.query<WorkItem>(
-    'SELECT * FROM work_items WHERE id = $1',
-    [id]
-  );
-
-  if (currentResult.rowCount === 0) {
-    res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
-    return;
-  }
-
-  const currentItem = currentResult.rows[0];
-
-  // Task 2: Users outside an item's team get 404
-  if (!can(user, 'resolve', currentItem)) {
-    const isMember = user.is_admin || user.memberships.some((m) => m.team_id === currentItem.team_id);
-    if (!isMember) {
-      res.status(404).json({ error: 'NOT_FOUND', message: 'Work item not found' });
-      return;
-    }
-    res.status(403).json({ error: 'FORBIDDEN', message: 'Viewers cannot resolve work items.' });
-    return;
-  }
-
-  const activityId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-  const outboxId = `out_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-
   try {
     const updatedItem = await withTransaction(async (client) => {
-      const updateResult = await client.query<WorkItem>(
-        `UPDATE work_items 
-         SET status = 'resolved', 
-             version = version + 1, 
-             updated_at = NOW() 
-         WHERE id = $1 AND version = $2 
-         RETURNING *;`,
-        [id, expected_version]
+      // 1. Move the item read inside the transaction using SELECT * FROM work_items WHERE id=$1 FOR UPDATE
+      const currentResult = await client.query<WorkItem>(
+        'SELECT * FROM work_items WHERE id = $1 FOR UPDATE',
+        [id]
       );
 
-      if (updateResult.rowCount === 0) {
-        const fresh = await client.query<WorkItem>(
-          'SELECT version FROM work_items WHERE id = $1',
-          [id]
-        );
-        const err: any = new Error('OPTIMISTIC_LOCK_CONFLICT');
-        err.code = 'OPTIMISTIC_LOCK_CONFLICT';
-        err.current_version = fresh.rows[0]?.version;
+      if (currentResult.rowCount === 0) {
+        const err: any = new Error('NOT_FOUND');
+        err.statusCode = 404;
+        err.payload = { error: 'NOT_FOUND', message: 'Work item not found' };
         throw err;
       }
 
+      const currentItem = currentResult.rows[0];
+
+      // Users outside team get 404
+      if (!can(user, 'view', currentItem)) {
+        const err: any = new Error('NOT_FOUND');
+        err.statusCode = 404;
+        err.payload = { error: 'NOT_FOUND', message: 'Work item not found' };
+        throw err;
+      }
+
+      // 2. Run the allowed-transition and can() checks on that locked row
+      const allowed = ALLOWED_TRANSITIONS[currentItem.status] || [];
+      if (!allowed.includes(to)) {
+        const err: any = new Error('INVALID_TRANSITION');
+        err.statusCode = 409;
+        err.payload = {
+          error: 'INVALID_TRANSITION',
+          message: `Invalid status transition from '${currentItem.status}' to '${to}'.`,
+        };
+        throw err;
+      }
+
+      // Permission check:
+      // Approving (awaiting_approval -> resolved) or rejecting (awaiting_approval -> in_progress) requires approve permission (Lead/Admin)
+      if (currentItem.status === 'awaiting_approval' && (to === 'resolved' || to === 'in_progress')) {
+        if (!can(user, 'approve', currentItem)) {
+          const err: any = new Error('FORBIDDEN');
+          err.statusCode = 403;
+          err.payload = {
+            error: 'FORBIDDEN',
+            message: 'Only Team Leads and Administrators can approve or reject work items.',
+          };
+          throw err;
+        }
+      } else {
+        if (!can(user, 'transition', currentItem)) {
+          const err: any = new Error('FORBIDDEN');
+          err.statusCode = 403;
+          err.payload = {
+            error: 'FORBIDDEN',
+            message: 'You do not have permission to transition this work item.',
+          };
+          throw err;
+        }
+      }
+
+      // 3. Keep the version check and the 409 response
+      const updateResult = await client.query<WorkItem>(
+        `UPDATE work_items 
+         SET status = $1, 
+             version = version + 1, 
+             updated_at = NOW() 
+         WHERE id = $2 AND version = $3 
+         RETURNING *;`,
+        [to, id, version]
+      );
+
+      if (updateResult.rowCount === 0) {
+        const err: any = new Error('OPTIMISTIC_LOCK_CONFLICT');
+        err.statusCode = 409;
+        err.payload = {
+          error: 'OPTIMISTIC_LOCK_CONFLICT',
+          message: 'This item was changed by someone else. Reload.',
+          item: currentItem,
+          current_version: currentItem.version,
+        };
+        throw err;
+      }
+
+      const activityId = crypto.randomUUID();
+      const outboxId = crypto.randomUUID();
+
       await client.query(
         `INSERT INTO activity_events (id, item_id, actor_id, action, details)
-         VALUES ($1, $2, $3, 'resolved', $4);`,
+         VALUES ($1, $2, $3, 'transition', $4);`,
         [
           activityId,
           id,
           user.id,
           JSON.stringify({
-            notes: resolution_notes,
+            actor: user.name,
             actor_name: user.name,
-            resolved_at: new Date().toISOString(),
+            from: currentItem.status,
+            to,
           }),
         ]
       );
 
       await client.query(
         `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at)
-         VALUES ($1, 'ITEM_RESOLVED_NOTIFICATION', $2, 'pending', 0, 3, NOW());`,
+         VALUES ($1, 'ITEM_STATUS_TRANSITIONED', $2, 'pending', 0, 3, NOW());`,
         [
           outboxId,
           JSON.stringify({
             item_id: id,
-            resolved_by: user.name,
-            resolution_notes,
+            team_id: currentItem.team_id,
+            actor: user.name,
+            from: currentItem.status,
+            to,
           }),
         ]
       );
@@ -710,20 +767,26 @@ export async function resolveItem(req: Request, res: Response): Promise<void> {
     });
 
     res.json({
-      message: 'Work item resolved successfully',
+      message: 'Status transitioned successfully',
       item: updatedItem,
     });
   } catch (err: any) {
-    if (err.code === 'OPTIMISTIC_LOCK_CONFLICT') {
-      res.status(409).json({
-        error: 'OPTIMISTIC_LOCK_CONFLICT',
-        message: 'This item was changed by someone else. Reload.',
-        current_version: err.current_version,
-      });
+    if (err.statusCode && err.payload) {
+      res.status(err.statusCode).json(err.payload);
       return;
     }
     throw err;
   }
+}
+
+/**
+ * POST /api/items/:id/resolve
+ * Legacy resolve route forwards to transition to resolved, ensuring member resolve shortcut is removed.
+ */
+export async function resolveItem(req: Request, res: Response): Promise<void> {
+  req.body.to = 'resolved';
+  req.body.version = typeof req.body.version === 'number' ? req.body.version : req.body.expected_version;
+  return transitionItem(req, res);
 }
 
 /**

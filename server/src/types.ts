@@ -2,7 +2,7 @@
  * Shared Type Definitions for Workdesk
  */
 
-export type WorkItemStatus = 'open' | 'in_progress' | 'blocked' | 'resolved' | 'closed';
+export type WorkItemStatus = 'open' | 'in_progress' | 'awaiting_approval' | 'resolved' | 'closed';
 export type WorkItemPriority = 'low' | 'medium' | 'high' | 'critical';
 export type WorkItemType = 'task' | 'bug' | 'feature' | 'incident';
 

@@ -10,7 +10,8 @@ export type Action =
   | 'create'
   | 'update'
   | 'claim'
-  | 'resolve'
+  | 'transition'
+  | 'approve'
   | 'delete'
   | 'comment';
 
@@ -36,18 +37,22 @@ export interface WorkItemTarget {
 }
 
 /**
- * Role by Action Matrix:
+ * Updated Role by Action Matrix:
  * 
- * | Action   | Viewer | Member | Lead | Admin |
- * | :------- | :----: | :----: | :--: | :---: |
- * | view     |   ✔    |   ✔    |  ✔   |   ✔   |
- * | comment  |   ✔    |   ✔    |  ✔   |   ✔   |
- * | create   |   ✖    |   ✔    |  ✔   |   ✔   |
- * | update   |   ✖    |   ✔    |  ✔   |   ✔   |
- * | claim    |   ✖    |   ✔    |  ✔   |   ✔   |
- * | resolve  |   ✖    |   ✔    |  ✔   |   ✔   |
- * | delete   |   ✖    |   ✖    |  ✔   |   ✔   |
+ * | Action     | Viewer | Member | Lead | Admin |
+ * | :--------- | :----: | :----: | :--: | :---: |
+ * | view       |   ✔    |   ✔    |  ✔   |   ✔   |
+ * | comment    |   ✔    |   ✔    |  ✔   |   ✔   |
+ * | create     |   ✖    |   ✔    |  ✔   |   ✔   |
+ * | update     |   ✖    |   ✔    |  ✔   |   ✔   |
+ * | claim      |   ✖    |   ✔    |  ✔   |   ✔   |
+ * | transition |   ✖    |   ✔    |  ✔   |   ✔   |
+ * | approve    |   ✖    |   ✖    |  ✔   |   ✔   |
+ * | delete     |   ✖    |   ✖    |  ✔   |   ✔   |
  * 
+ * Note: Members can move items up to awaiting_approval via 'transition'.
+ * Approving (awaiting_approval -> resolved) or rejecting (awaiting_approval -> in_progress)
+ * requires 'approve', which is restricted exclusively to Team Leads and Administrators.
  * Users outside an item's team have no membership and receive false (resulting in 404).
  */
 export function can(
@@ -67,25 +72,26 @@ export function can(
   // 2. Find user's membership in the target item's team
   const membership = user.memberships.find((m) => m.team_id === item.team_id);
   if (!membership) {
-    // User is outside the item's team -> not authorized
+    // User is outside the item's team -> not authorized (triggers 404)
     return false;
   }
 
   // 3. Evaluate permissions based on team role
   switch (membership.role) {
     case 'lead':
-      // Team leads can perform all actions within their team
+      // Team leads can perform all actions within their team including approve and delete
       return true;
 
     case 'member':
-      // Team members can view, create, update, claim, comment, and resolve, but cannot delete
-      if (action === 'delete') {
+      // Team members can view, create, update, claim, comment, and transition (up to awaiting_approval).
+      // They CANNOT delete or approve/reject.
+      if (action === 'delete' || action === 'approve') {
         return false;
       }
       return true;
 
     case 'viewer':
-      // Viewers can view items and comment, but cannot mutate status/fields
+      // Viewers can view items and comment, but cannot mutate items
       return action === 'view' || action === 'comment';
 
     default:
