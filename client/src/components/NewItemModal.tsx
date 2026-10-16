@@ -22,7 +22,7 @@ export const NewItemModal: React.FC<NewItemModalProps> = ({
   onSubmit,
   isSubmitting,
 }) => {
-  const [teamId, setTeamId] = useState(teams[0]?.id || 'team_billing');
+  const [teamId, setTeamId] = useState(teams[0]?.id || '');
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [priority, setPriority] = useState('medium');
@@ -32,7 +32,7 @@ export const NewItemModal: React.FC<NewItemModalProps> = ({
     e.preventDefault();
     if (!title.trim()) return;
 
-    const idempotencyKey = `idem_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const idempotencyKey = crypto.randomUUID();
     await onSubmit({
       team_id: teamId,
       title: title.trim(),

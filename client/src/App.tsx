@@ -47,6 +47,43 @@ export function App() {
     queryClient.clear();
   };
 
+  // Validate authentication session on app start
+  useEffect(() => {
+    const token = localStorage.getItem('workdesk_token');
+    if (!token) {
+      if (currentUser) {
+        handleLogout();
+      }
+      return;
+    }
+
+    let isMounted = true;
+    fetch('/api/auth/me', {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+    })
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error('Invalid or expired authentication session');
+        }
+        const data = await res.json();
+        if (isMounted && data.user) {
+          setCurrentUser(data.user);
+          localStorage.setItem('workdesk_user', JSON.stringify(data.user));
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          handleLogout();
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   // 2. Navigation View State
   const [currentView, setCurrentView] = useState<NavView>('all');
 

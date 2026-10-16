@@ -42,7 +42,7 @@ export async function loginApi(
   const res = await fetch(`${API_BASE}/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password: password || 'password123' }),
+    body: JSON.stringify({ email, password: password || 'Demo@12345' }),
   });
 
   const data = await res.json().catch(() => ({}));
