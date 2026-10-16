@@ -15,12 +15,30 @@ export interface Team {
   description: string;
 }
 
+export const WORK_ITEM_STATUSES = [
+  'open',
+  'in_progress',
+  'awaiting_approval',
+  'resolved',
+  'closed',
+] as const;
+
+export type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
+
+export const STATUS_LABELS: Record<WorkItemStatus, string> = {
+  open: 'Open',
+  in_progress: 'In Progress',
+  awaiting_approval: 'Awaiting Approval',
+  resolved: 'Resolved',
+  closed: 'Closed',
+};
+
 export interface WorkItem {
   id: string;
   team_id: string;
   title: string;
   description: string;
-  status: 'open' | 'in_progress' | 'awaiting_approval' | 'resolved' | 'closed';
+  status: WorkItemStatus;
   priority: 'low' | 'medium' | 'high' | 'critical';
   assignee_id: string | null;
   assignee_name?: string | null;

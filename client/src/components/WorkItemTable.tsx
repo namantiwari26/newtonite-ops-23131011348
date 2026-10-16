@@ -11,6 +11,7 @@ interface WorkItemTableProps {
   isFetchingNextPage: boolean;
   onLoadMore: () => void;
   totalCount: number;
+  onClearFilters?: () => void;
 }
 
 export const WorkItemTable: React.FC<WorkItemTableProps> = ({
@@ -23,6 +24,7 @@ export const WorkItemTable: React.FC<WorkItemTableProps> = ({
   isFetchingNextPage,
   onLoadMore,
   totalCount,
+  onClearFilters,
 }) => {
   const getTeamName = (teamId: string) => {
     return teams.find((t) => t.id === teamId)?.name || teamId;
@@ -84,8 +86,21 @@ export const WorkItemTable: React.FC<WorkItemTableProps> = ({
               ))
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={8} style={{ textAlign: 'center', padding: '48px 16px', color: '#6B7280' }}>
-                  No work items found matching the selected filters.
+                <td colSpan={8} style={{ textAlign: 'center', padding: '60px 16px' }}>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
+                    <div style={{ fontSize: 14, fontWeight: 500, color: '#4B5563' }}>
+                      No work items match these filters
+                    </div>
+                    {onClearFilters && (
+                      <button
+                        onClick={onClearFilters}
+                        className="btn btn-secondary"
+                        style={{ height: 32, fontSize: 13, padding: '0 14px' }}
+                      >
+                        Clear filters
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             ) : (

@@ -1,13 +1,49 @@
 import React from 'react';
-import { User } from '../types.js';
+import { User, Team } from '../types.js';
 import { CheckSquare, AlertCircle, Inbox, Layers, LogOut } from 'lucide-react';
 
 export type NavView = 'all' | 'my_work' | 'needs_approval' | 'unassigned_urgent';
+
+export function getUserDisplayRole(user: User, teams: Team[] = []): string {
+  if (user.is_admin) {
+    return 'Administrator';
+  }
+
+  if (!user.memberships || user.memberships.length === 0) {
+    return 'Viewer';
+  }
+
+  // Priority ranking: lead (3) > member (2) > viewer (1)
+  const roleWeight: Record<string, number> = {
+    lead: 3,
+    member: 2,
+    viewer: 1,
+  };
+
+  const sorted = [...user.memberships].sort(
+    (a, b) => (roleWeight[b.role] || 0) - (roleWeight[a.role] || 0)
+  );
+  const highest = sorted[0];
+
+  const team = teams.find((t) => t.id === highest.team_id);
+  const teamName = team?.name;
+
+  if (highest.role === 'lead') {
+    return teamName ? `Lead in ${teamName}` : 'Lead';
+  }
+
+  if (highest.role === 'member') {
+    return 'Member';
+  }
+
+  return 'Viewer';
+}
 
 interface SidebarProps {
   currentView: NavView;
   onSelectView: (view: NavView) => void;
   currentUser: User;
+  teams?: Team[];
   onLogout: () => void;
 }
 
@@ -15,6 +51,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   currentView,
   onSelectView,
   currentUser,
+  teams = [],
   onLogout,
 }) => {
   const getInitials = (name: string) => {
@@ -151,12 +188,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
             }}>
               {currentUser.name}
             </div>
-            <div style={{
-              fontSize: 11,
-              color: '#6B7280',
-              textTransform: 'capitalize',
-            }}>
-              {currentUser.is_admin ? 'Admin' : 'Member'}
+            <div
+              style={{
+                fontSize: 11,
+                color: '#6B7280',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+              title={getUserDisplayRole(currentUser, teams)}
+            >
+              {getUserDisplayRole(currentUser, teams)}
             </div>
           </div>
         </div>

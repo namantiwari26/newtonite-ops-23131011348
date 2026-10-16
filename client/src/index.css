@@ -182,7 +182,7 @@ button, input, select, textarea {
 }
 .status-dot-open { background-color: #3B82F6; }
 .status-dot-in_progress { background-color: #F59E0B; }
-.status-dot-blocked { background-color: #EF4444; }
+.status-dot-awaiting_approval { background-color: #8B5CF6; }
 .status-dot-resolved { background-color: #10B981; }
 .status-dot-closed { background-color: #6B7280; }
 

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useQuery, useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   fetchTeams,
@@ -70,7 +70,7 @@ export function App() {
     search: search.trim() || undefined,
     // Map navigation views to server query parameters
     ...(currentView === 'my_work' && currentUser ? { assignee: currentUser.id } : {}),
-    ...(currentView === 'needs_approval' ? { status: 'blocked' } : {}),
+    ...(currentView === 'needs_approval' ? { status: 'awaiting_approval' } : {}),
     ...(currentView === 'unassigned_urgent' ? { assignee: 'unassigned', priority: 'critical' } : {}),
   };
 
@@ -86,6 +86,25 @@ export function App() {
     queryFn: fetchUsers,
     enabled: !!currentUser,
   });
+
+  // Scoped Teams and Users for logged-in user
+  const userTeamIds = useMemo(() => {
+    return new Set(currentUser?.memberships?.map((m) => m.team_id) || []);
+  }, [currentUser]);
+
+  // Team filter lists only teams the logged-in user belongs to (everything for admins)
+  const availableTeams = useMemo(() => {
+    if (!currentUser) return [];
+    if (currentUser.is_admin) return teams;
+    return teams.filter((t) => userTeamIds.has(t.id));
+  }, [currentUser, teams, userTeamIds]);
+
+  // Assignee filter lists only users who share a team with the current user
+  const availableUsers = useMemo(() => {
+    if (!currentUser) return [];
+    if (currentUser.is_admin) return users;
+    return users.filter((u) => u.memberships?.some((m) => userTeamIds.has(m.team_id)));
+  }, [currentUser, users, userTeamIds]);
 
   // Fetch Work Items with Server-Side Keyset Cursor Pagination
   const {
@@ -224,6 +243,7 @@ export function App() {
           setSelectedItemId(null);
         }}
         currentUser={currentUser}
+        teams={teams}
         onLogout={handleLogout}
       />
 
@@ -238,8 +258,8 @@ export function App() {
 
         {/* Filter Toolbar with Dropdowns and Removable Chips */}
         <FilterToolbar
-          teams={teams}
-          users={users}
+          teams={availableTeams}
+          users={availableUsers}
           status={filters.status}
           priority={filters.priority}
           teamId={filters.team_id}
@@ -268,6 +288,15 @@ export function App() {
             isFetchingNextPage={isFetchingNextPage}
             onLoadMore={() => fetchNextPage()}
             totalCount={totalCount}
+            onClearFilters={() => {
+              setFilters({
+                status: '',
+                priority: '',
+                team_id: '',
+                assignee: '',
+              });
+              setSearch('');
+            }}
           />
 
           {/* Right-Side Item Detail Panel */}

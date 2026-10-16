@@ -63,8 +63,8 @@ export async function seedData(): Promise<void> {
     `);
 
     // 5. Generate work items across the 3 teams (Task 4: SEED_ITEMS env var, default 20000)
-    // ~20% unassigned (i % 5 = 0), varied status, priority, type, due dates, created dates
-    // Statuses include: open, in_progress, awaiting_approval, resolved, closed
+    // Varied title selection using hash of ID across payment, support, and platform types
+    // Varied priority, status, and about 20% assigned (80% unassigned)
     await client.query(`
       INSERT INTO work_items (
         id, team_id, title, description, type, status, priority,
@@ -72,51 +72,53 @@ export async function seedData(): Promise<void> {
       )
       SELECT
         'itm_' || LPAD(i::text, 6, '0'),
-        (ARRAY['team_billing', 'team_platform', 'team_support'])[(i % 3) + 1],
+        (ARRAY['team_billing', 'team_platform', 'team_support'])[ (('x' || SUBSTRING(MD5((i * 3)::text), 1, 4))::bit(16)::int % 3) + 1 ],
         (ARRAY[
-          'Refund not processed for',
-          'Payment gateway timeout in',
-          'OAuth token refresh failure on',
-          'High latency in checkout',
-          'Invoice PDF generation error for',
-          'Database connection pool exhausted in',
-          'SSL certificate expiration alert for',
-          'Webhook delivery failure for',
-          'Bulk export to CSV memory limit in',
-          'Single Sign-On SAML configuration for',
-          'Subscription upgrade charge failure for',
-          'Rate limit exceeded on public API for',
-          'Customer notification email bounce in',
-          'Cart recalculation discrepancy in',
-          'Audit log synchronization delay in'
-        ])[(i % 15) + 1] || ' ' ||
-        (ARRAY[
-          'order #' || (10000 + (i * 7 % 89999)),
-          'merchant checkout flow',
-          'Android mobile client',
-          'Stripe charge ch_' || SUBSTRING(MD5(i::text), 1, 8),
-          'enterprise workspace #' || (200 + (i % 800)),
-          'reporting cluster node ' || (1 + (i % 8)),
-          'api gateway edge proxy',
-          'partner webhook subscription',
-          'background export job #' || (4000 + i),
-          'Okta directory sync service',
-          'annual billing cycle',
-          'v2 telemetry endpoints',
-          'transactional email pipeline',
-          'multi-currency checkout session',
-          'SOC2 compliance audit logs'
-        ])[(i % 15) + 1],
+          -- Payment & Billing templates
+          'Refund not processed for order #' || (10000 + (('x' || SUBSTRING(MD5((i * 13)::text), 1, 4))::bit(16)::int % 89999)),
+          'Payment gateway timeout in merchant checkout flow',
+          'Stripe webhook charge signature verification failed',
+          'Invoice PDF reconciliation error for billing cycle',
+          'Multi-currency settlement discrepancy in checkout',
+          'Subscription upgrade proration calculation error',
+          'Chargeback notification dispute pending review',
+          'Declined credit card automatic retry threshold exceeded',
+          'SEPA direct debit mandate authorization failure',
+          -- Platform & Infrastructure templates
+          'OAuth token refresh failure on Android mobile client',
+          'Database connection pool exhausted in reporting cluster',
+          'SSL certificate expiration alert on api gateway',
+          'High latency detected in ingress proxy routing',
+          'Redis session cache eviction rate spike',
+          'Kafka consumer group lag alert in telemetry pipeline',
+          'Rate limit exceeded on public REST API endpoint',
+          'Single Sign-On SAML assertion parsing exception',
+          'Elasticsearch cluster index red status alert',
+          -- Support & Customer Operations templates
+          'Customer notification email bounce in transactional pipeline',
+          'Cart recalculation discrepancy in enterprise workspace',
+          'Audit log synchronization delay for customer account',
+          'User invitation link expired before tenant activation',
+          'Two-factor authentication emergency reset request',
+          'Password reset email delivery delay for customer',
+          'Bulk export to CSV memory limit exceeded',
+          'Team member seat allocation limit reached in organization',
+          'Customer onboarding flow stalled at verification step'
+        ])[ (('x' || SUBSTRING(MD5(i::text), 1, 4))::bit(16)::int % 27) + 1 ],
         'Detailed diagnostic report and support context for ticket ' || i || '. Customer transaction logs and telemetry metrics attached for investigation.',
-        (ARRAY['task', 'bug', 'feature', 'incident'])[(i % 4) + 1],
-        (ARRAY['open', 'in_progress', 'awaiting_approval', 'resolved', 'closed'])[(i % 5) + 1],
-        (ARRAY['low', 'medium', 'high', 'critical'])[(i % 4) + 1],
-        CASE WHEN (i % 5 = 0) THEN NULL ELSE (ARRAY['usr_marcus', 'usr_sarah', 'usr_lucas', 'usr_priya', 'usr_elena', 'usr_rachel'])[(i % 6) + 1] END,
-        (ARRAY['usr_admin', 'usr_priya', 'usr_elena', 'usr_rachel', 'usr_marcus', 'usr_sarah'])[(i % 6) + 1],
-        NOW() + (((i % 40) - 10) || ' days')::interval,
-        1 + (i % 3),
-        NOW() - ((i % 60) || ' days')::interval - ((i % 24) || ' hours')::interval,
-        NOW() - ((i % 10) || ' days')::interval
+        (ARRAY['task', 'bug', 'feature', 'incident'])[ (('x' || SUBSTRING(MD5((i * 17)::text), 1, 4))::bit(16)::int % 4) + 1 ],
+        (ARRAY['open', 'in_progress', 'awaiting_approval', 'resolved', 'closed'])[ (('x' || SUBSTRING(MD5((i * 11)::text), 1, 4))::bit(16)::int % 5) + 1 ],
+        (ARRAY['low', 'medium', 'high', 'critical'])[ (('x' || SUBSTRING(MD5((i * 7)::text), 1, 4))::bit(16)::int % 4) + 1 ],
+        -- About 20% assigned, 80% unassigned
+        CASE WHEN (('x' || SUBSTRING(MD5((i * 23)::text), 1, 4))::bit(16)::int % 100 < 20)
+          THEN (ARRAY['usr_marcus', 'usr_sarah', 'usr_lucas', 'usr_priya', 'usr_elena', 'usr_rachel'])[ (('x' || SUBSTRING(MD5((i * 31)::text), 1, 4))::bit(16)::int % 6) + 1 ]
+          ELSE NULL
+        END,
+        (ARRAY['usr_admin', 'usr_priya', 'usr_elena', 'usr_rachel', 'usr_marcus', 'usr_sarah'])[ (('x' || SUBSTRING(MD5((i * 29)::text), 1, 4))::bit(16)::int % 6) + 1 ],
+        NOW() + ((((('x' || SUBSTRING(MD5((i * 37)::text), 1, 4))::bit(16)::int % 40) - 10)) || ' days')::interval,
+        1 + (('x' || SUBSTRING(MD5((i * 41)::text), 1, 4))::bit(16)::int % 3),
+        NOW() - ((('x' || SUBSTRING(MD5((i * 43)::text), 1, 4))::bit(16)::int % 60) || ' days')::interval - ((i % 24) || ' hours')::interval,
+        NOW() - ((('x' || SUBSTRING(MD5((i * 47)::text), 1, 4))::bit(16)::int % 10) || ' days')::interval
       FROM generate_series(1, $1::int) AS i;
     `, [totalItems]);
 

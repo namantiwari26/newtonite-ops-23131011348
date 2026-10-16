@@ -1,5 +1,5 @@
 import React from 'react';
-import { Team, User } from '../types.js';
+import { Team, User, WORK_ITEM_STATUSES, STATUS_LABELS, WorkItemStatus } from '../types.js';
 import { X } from 'lucide-react';
 
 interface FilterToolbarProps {
@@ -33,7 +33,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
   if (status) {
     activeChips.push({
       key: 'status',
-      label: `Status: ${status.replace('_', ' ')}`,
+      label: `Status: ${STATUS_LABELS[status as WorkItemStatus] || status.replace('_', ' ')}`,
       onRemove: () => onFilterChange({ status: '' }),
     });
   }
@@ -85,11 +85,11 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           onChange={(e) => onFilterChange({ status: e.target.value })}
         >
           <option value="">Status: All</option>
-          <option value="open">Open</option>
-          <option value="in_progress">In Progress</option>
-          <option value="blocked">Blocked</option>
-          <option value="resolved">Resolved</option>
-          <option value="closed">Closed</option>
+          {WORK_ITEM_STATUSES.map((s) => (
+            <option key={s} value={s}>
+              {STATUS_LABELS[s]}
+            </option>
+          ))}
         </select>
 
         <select

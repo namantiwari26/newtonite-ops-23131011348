@@ -2,7 +2,15 @@
  * Shared Type Definitions for Workdesk
  */
 
-export type WorkItemStatus = 'open' | 'in_progress' | 'awaiting_approval' | 'resolved' | 'closed';
+export const WORK_ITEM_STATUSES = [
+  'open',
+  'in_progress',
+  'awaiting_approval',
+  'resolved',
+  'closed',
+] as const;
+
+export type WorkItemStatus = (typeof WORK_ITEM_STATUSES)[number];
 export type WorkItemPriority = 'low' | 'medium' | 'high' | 'critical';
 export type WorkItemType = 'task' | 'bug' | 'feature' | 'incident';
 
