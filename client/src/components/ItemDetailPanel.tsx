@@ -37,6 +37,7 @@ const TRANSITION_LABELS: Record<string, string> = {
 export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
   item,
   teams,
+  users = [],
   currentUser,
   activityEvents,
   comments,
@@ -51,6 +52,27 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
 }) => {
   const [newComment, setNewComment] = useState('');
   const [isPostingComment, setIsPostingComment] = useState(false);
+
+  // User name lookup helper
+  const getUserName = (userId?: string | null) => {
+    if (!userId) return '';
+    const u = users.find((user) => user.id === userId);
+    return u ? u.name : userId;
+  };
+
+  const formatStatus = (s?: string) => {
+    if (!s) return '';
+    return TRANSITION_LABELS[s] || s.replace(/_/g, ' ');
+  };
+
+  const formatDueDate = (d?: string | null) => {
+    if (!d) return 'none';
+    try {
+      return new Date(d).toLocaleDateString();
+    } catch {
+      return String(d);
+    }
+  };
 
   // Check user permissions in item team
   const userTeamMembership = currentUser.memberships?.find((m) => m.team_id === item.team_id);
@@ -82,6 +104,96 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
     }
     return true;
   });
+
+  // Merge comments and activity into one chronological list
+  const commentIdsInActivity = new Set(
+    activityEvents
+      .filter((a) => a.action === 'comment' && a.details?.comment_id)
+      .map((a) => a.details.comment_id)
+  );
+
+  interface TimelineItem {
+    id: string;
+    actorName: string;
+    createdAt: string;
+    action: string;
+    sentences: string[];
+    content?: string;
+  }
+
+  const timelineItems: TimelineItem[] = [];
+
+  for (const evt of activityEvents) {
+    const actor = evt.actor_name || getUserName(evt.actor_id);
+    const sentences: string[] = [];
+    let content: string | undefined;
+
+    if (evt.action === 'created') {
+      sentences.push('created this work item');
+    } else if (evt.action === 'claimed') {
+      const claimer = evt.details?.actor_name || getUserName(evt.details?.claimed_by) || actor;
+      sentences.push(`claimed by ${claimer}`);
+    } else if (evt.action === 'transition') {
+      const from = formatStatus(evt.details?.from);
+      const to = formatStatus(evt.details?.to);
+      sentences.push(`status changed from ${from} to ${to}`);
+    } else if (evt.action === 'updated') {
+      const changes = evt.details?.changes || {};
+      if (changes.title) {
+        sentences.push(`title changed from "${changes.title.from}" to "${changes.title.to}"`);
+      }
+      if (changes.priority) {
+        sentences.push(`priority changed from ${changes.priority.from} to ${changes.priority.to}`);
+      }
+      if (changes.status) {
+        sentences.push(`status changed from ${formatStatus(changes.status.from)} to ${formatStatus(changes.status.to)}`);
+      }
+      if (changes.due_date) {
+        sentences.push(`due date changed from ${formatDueDate(changes.due_date.from)} to ${formatDueDate(changes.due_date.to)}`);
+      }
+      if (changes.assignee_id) {
+        const fromName = getUserName(changes.assignee_id.from) || 'unassigned';
+        const toName = getUserName(changes.assignee_id.to) || 'unassigned';
+        sentences.push(`assignee changed from ${fromName} to ${toName}`);
+      }
+      if (sentences.length === 0) {
+        sentences.push('updated work item properties');
+      }
+    } else if (evt.action === 'comment') {
+      sentences.push('commented');
+      content = evt.details?.content;
+    } else {
+      sentences.push(evt.action);
+    }
+
+    timelineItems.push({
+      id: evt.id,
+      actorName: actor,
+      createdAt: evt.created_at,
+      action: evt.action,
+      sentences,
+      content,
+    });
+  }
+
+  for (const c of comments) {
+    if (!commentIdsInActivity.has(c.id)) {
+      const actor = c.user_name || getUserName(c.user_id);
+      timelineItems.push({
+        id: c.id,
+        actorName: actor,
+        createdAt: c.created_at,
+        action: 'comment',
+        sentences: ['commented'],
+        content: c.content,
+      });
+    }
+  }
+
+  // Sort chronological (oldest to newest)
+  timelineItems.sort(
+    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+  );
 
   return (
     <div
@@ -326,79 +438,66 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
           </div>
         </div>
 
-        {/* Activity Events */}
+        {/* Unified Chronological Activity & Comments Timeline */}
         <div>
           <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', marginBottom: 12 }}>
-            Activity ({activityEvents.length})
+            Activity & Comments ({timelineItems.length})
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {activityEvents.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#9CA3AF' }}>No activity events recorded yet.</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+            {timelineItems.length === 0 ? (
+              <div style={{ fontSize: 12, color: '#9CA3AF' }}>No activity or comments recorded yet.</div>
             ) : (
-              activityEvents.map((evt) => (
+              timelineItems.map((entry) => (
                 <div
-                  key={evt.id}
+                  key={entry.id}
                   style={{
                     fontSize: 12,
                     color: '#4B5563',
-                    padding: '8px 12px',
-                    background: '#F9FAFB',
-                    borderRadius: 6,
-                    border: '1px solid #F3F4F6',
-                  }}
-                >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 2 }}>
-                    <span style={{ fontWeight: 600, color: '#111827' }}>
-                      {evt.actor_name || evt.actor_id}
-                    </span>
-                    <span style={{ color: '#9CA3AF', fontSize: 11 }}>
-                      {new Date(evt.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    </span>
-                  </div>
-                  <div>
-                    {evt.action === 'created' && 'created this work item'}
-                    {evt.action === 'claimed' && 'claimed this work item'}
-                    {evt.action === 'transition' && `transitioned status: ${evt.details?.from || ''} → ${evt.details?.to || ''}`}
-                    {evt.action === 'updated' && 'updated work item properties'}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-
-        {/* Comments */}
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: '#111827', marginBottom: 12 }}>
-            Comments ({comments.length})
-          </div>
-
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 16 }}>
-            {comments.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#9CA3AF' }}>No comments yet.</div>
-            ) : (
-              comments.map((c) => (
-                <div
-                  key={c.id}
-                  style={{
                     padding: '10px 12px',
-                    background: '#F9FAFB',
-                    border: '1px solid #E5E7EB',
+                    background: entry.action === 'comment' ? '#F9FAFB' : '#FAFAFA',
                     borderRadius: 6,
+                    border: '1px solid #E5E7EB',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: '#111827' }}>
-                      {c.user_name || c.user_id}
-                    </span>
-                    <span style={{ fontSize: 11, color: '#9CA3AF' }}>
-                      {new Date(c.created_at).toLocaleDateString()}
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 600, color: '#111827' }}>
+                        {entry.actorName}
+                      </span>
+                      {entry.sentences.map((sentence, idx) => (
+                        <span key={idx} style={{ color: '#4B5563' }}>
+                          {sentence}
+                        </span>
+                      ))}
+                    </div>
+                    <span style={{ color: '#9CA3AF', fontSize: 11, whiteSpace: 'nowrap', marginLeft: 8 }}>
+                      {new Date(entry.createdAt).toLocaleDateString([], {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
                     </span>
                   </div>
-                  <div style={{ fontSize: 13, color: '#374151', whiteSpace: 'pre-wrap' }}>
-                    {c.content}
-                  </div>
+
+                  {entry.content && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        padding: '8px 10px',
+                        background: '#FFFFFF',
+                        border: '1px solid #E5E7EB',
+                        borderRadius: 4,
+                        fontSize: 13,
+                        color: '#1F2937',
+                        whiteSpace: 'pre-wrap',
+                        lineHeight: 1.5,
+                      }}
+                    >
+                      {entry.content}
+                    </div>
+                  )}
                 </div>
               ))
             )}

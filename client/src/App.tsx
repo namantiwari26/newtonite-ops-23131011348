@@ -167,6 +167,7 @@ export function App() {
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? (lastPage.next_cursor ?? undefined) : undefined,
     enabled: !!currentUser,
+    refetchInterval: 10000, // 10-second background polling
   });
 
   const allItems = itemsPages?.pages.flatMap((page) => page.items) || [];
@@ -181,6 +182,7 @@ export function App() {
     queryKey: ['item-detail', selectedItemId],
     queryFn: () => fetchItemDetail(selectedItemId!),
     enabled: !!selectedItemId && !!currentUser,
+    refetchInterval: 10000, // 10-second background polling
   });
 
   const selectedItem = detailData?.item || allItems.find((i) => i.id === selectedItemId) || null;
