@@ -4,26 +4,27 @@ import jwt from 'jsonwebtoken';
 import { pool } from '../db/pool.js';
 import { UserTeamMembership } from '../auth/can.js';
 
+// Pre-computed bcrypt hash (cost 10) to ensure constant-time response on non-existent accounts
+const DUMMY_HASH = '$2b$10$wT0XkQ6B9mEfZF1j3hGvKe5NqG6x1JbFq1yF1fW8UvO4tT5r6aQe2';
+
 /**
- * Validates that JWT_SECRET is configured in the environment.
- * Refuses execution with an explicit error if missing (no fallback default).
+ * Validates that JWT_SECRET is configured and sufficiently long (>= 32 chars).
+ * Refuses execution with an explicit error if missing or too short.
  */
 export function getJwtSecret(): string {
   const secret = process.env.JWT_SECRET;
   if (!secret || !secret.trim()) {
     throw new Error('JWT_SECRET environment variable is not defined. Server cannot start.');
   }
-  return secret.trim();
+  const trimmed = secret.trim();
+  if (trimmed.length < 32) {
+    throw new Error('JWT_SECRET must be at least 32 characters long for security.');
+  }
+  return trimmed;
 }
 
 /**
- * Workdesk Enterprise Login Endpoint
- * 
- * 1. Looks up the user by email
- * 2. Compares password with bcrypt.compare against password_hash
- * 3. Returns 401 with generic "Invalid email or password" on any failure
- * 4. Signs a JWT with HS256, 8h expiration, containing only sub (the user id)
- * 
+ * Login endpoint: validates credentials and returns signed JWT.
  * POST /api/auth/login
  */
 export async function login(req: Request, res: Response): Promise<void> {
@@ -55,6 +56,8 @@ export async function login(req: Request, res: Response): Promise<void> {
     );
 
     if (rows.length === 0) {
+      // Execute dummy bcrypt.compare so execution time is indistinguishable from existing accounts
+      await bcrypt.compare(password, DUMMY_HASH);
       sendUnauthorized();
       return;
     }
@@ -70,11 +73,7 @@ export async function login(req: Request, res: Response): Promise<void> {
 
     // 3. Issue JWT: HS256, 8 hours, payload containing only sub
     const secret = getJwtSecret();
-    const token = jwt.sign(
-      { sub: user.id },
-      secret,
-      { algorithm: 'HS256', expiresIn: '8h' }
-    );
+    const token = jwt.sign({ sub: user.id }, secret, { algorithm: 'HS256', expiresIn: '8h' });
 
     // 4. Fetch team memberships
     const { rows: memberships } = await pool.query<UserTeamMembership>(

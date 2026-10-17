@@ -1,9 +1,20 @@
 import { pool, withTransaction } from '../db/pool.js';
 import { OutboxEvent } from '../types.js';
 
+const isTest = process.env.NODE_ENV === 'test';
+const log = (...args: any[]) => {
+  if (!isTest) console.log(...args);
+};
+const warn = (...args: any[]) => {
+  if (!isTest) console.warn(...args);
+};
+const error = (...args: any[]) => {
+  if (!isTest) console.error(...args);
+};
+
 /**
  * Transactional Outbox Worker
- * 
+ *
  * Handles reliable asynchronous processing with:
  * - Concurrency safety via `FOR UPDATE SKIP LOCKED`
  * - Exponential backoff on retries
@@ -15,36 +26,42 @@ import { OutboxEvent } from '../types.js';
  * Executes the specific asynchronous handler for a given event.
  */
 async function handleEvent(event: OutboxEvent): Promise<{ success: boolean; result?: any }> {
-  console.log(`[Outbox Worker] Executing handler for event ${event.id} (${event.event_type})...`);
+  log(`[Outbox Worker] Executing handler for event ${event.id} (${event.event_type})...`);
 
   switch (event.event_type) {
     case 'ITEM_CREATED_NOTIFICATION':
     case 'ITEM_CREATED_DISPATCH':
-      console.log(`[Outbox Worker] Notifying team ${event.payload.team_id} for new work item: "${event.payload.title}"`);
+      log(
+        `[Outbox Worker] Notifying team ${event.payload.team_id} for new work item: "${event.payload.title}"`
+      );
       return { success: true, result: 'Notification dispatched' };
 
     case 'ITEM_CLAIMED_NOTIFICATION':
-      console.log(`[Outbox Worker] User ${event.payload.claimed_by} claimed work item ${event.payload.item_id}`);
+      log(
+        `[Outbox Worker] User ${event.payload.claimed_by} claimed work item ${event.payload.item_id}`
+      );
       return { success: true, result: 'Claim broadcasted' };
 
     case 'ITEM_UPDATED_SYNC':
-      console.log(`[Outbox Worker] Synchronized updates for work item ${event.payload.item_id}`);
+      log(`[Outbox Worker] Synchronized updates for work item ${event.payload.item_id}`);
       return { success: true, result: 'Index updated' };
 
     case 'ITEM_RESOLVED_NOTIFICATION':
     case 'ITEM_RESOLVED_ARCHIVE':
-      console.log(`[Outbox Worker] Work item ${event.payload.item_id} resolved and archived`);
+      log(`[Outbox Worker] Work item ${event.payload.item_id} resolved and archived`);
       return { success: true, result: 'Resolution archived' };
 
     case 'ITEM_STATUS_TRANSITIONED':
-      console.log(`[Outbox Worker] Work item ${event.payload.item_id} transitioned from ${event.payload.from} to ${event.payload.to}`);
+      log(
+        `[Outbox Worker] Work item ${event.payload.item_id} transitioned from ${event.payload.from} to ${event.payload.to}`
+      );
       return { success: true, result: 'Transition processed' };
 
     case 'SIMULATED_FAILURE_TEST':
       throw new Error('Simulated external service timeout / 503 gateway error');
 
     default:
-      console.log(`[Outbox Worker] Processed event: ${event.event_type}`);
+      log(`[Outbox Worker] Processed event: ${event.event_type}`);
       return { success: true, result: 'Default noop handler' };
   }
 }
@@ -70,7 +87,9 @@ export async function reclaimStaleJobs(staleSeconds: number = 60): Promise<numbe
       const errorMessage = `Processing lock timed out after ${staleSeconds}s without completion`;
 
       if (isExhausted) {
-        console.warn(`[Outbox Worker] Stale job ${job.id} exhausted max attempts (${newAttempts}/${job.max_attempts}). Marking failed.`);
+        warn(
+          `[Outbox Worker] Stale job ${job.id} exhausted max attempts (${newAttempts}/${job.max_attempts}). Marking failed.`
+        );
         await client.query(
           `UPDATE outbox_events 
            SET status = 'failed', 
@@ -83,7 +102,9 @@ export async function reclaimStaleJobs(staleSeconds: number = 60): Promise<numbe
         );
       } else {
         const backoffSeconds = Math.pow(2, newAttempts) * 2;
-        console.warn(`[Outbox Worker] Reclaiming stale job ${job.id} (attempt ${newAttempts}/${job.max_attempts}). Retrying in ${backoffSeconds}s...`);
+        warn(
+          `[Outbox Worker] Reclaiming stale job ${job.id} (attempt ${newAttempts}/${job.max_attempts}). Retrying in ${backoffSeconds}s...`
+        );
         await client.query(
           `UPDATE outbox_events 
            SET status = 'pending', 
@@ -171,7 +192,9 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
       const errorMessage = err?.message || 'Unknown processing error';
 
       if (isExhausted) {
-        console.error(`[Outbox Worker] Event ${event.id} permanently failed after ${newAttempts} attempts.`);
+        error(
+          `[Outbox Worker] Event ${event.id} permanently failed after ${newAttempts} attempts.`
+        );
         await pool.query(
           `UPDATE outbox_events 
            SET status = 'failed', 
@@ -184,7 +207,9 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
         );
       } else {
         const backoffSeconds = Math.pow(2, newAttempts) * 2;
-        console.warn(`[Outbox Worker] Event ${event.id} failed attempt ${newAttempts}/${event.max_attempts}. Retrying in ${backoffSeconds}s...`);
+        warn(
+          `[Outbox Worker] Event ${event.id} failed attempt ${newAttempts}/${event.max_attempts}. Retrying in ${backoffSeconds}s...`
+        );
         await pool.query(
           `UPDATE outbox_events 
            SET status = 'pending', 
@@ -209,18 +234,44 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
 }
 
 /**
+ * Deletes idempotency keys older than the specified duration (default: 24 hours).
+ */
+export async function cleanupExpiredIdempotencyKeys(olderThanHours: number = 24): Promise<number> {
+  const result = await pool.query(
+    `DELETE FROM idempotency_keys 
+     WHERE created_at < NOW() - ($1 || ' hours')::interval;`,
+    [olderThanHours]
+  );
+  const deletedCount = result.rowCount ?? 0;
+  if (deletedCount > 0) {
+    log(
+      `[Outbox Worker] Cleaned up ${deletedCount} idempotency keys older than ${olderThanHours} hours.`
+    );
+  }
+  return deletedCount;
+}
+
+/**
  * Starts a recurring background worker polling loop.
  */
 export function startOutboxWorker(intervalMs: number = 3000): { stop: () => void } {
   let isRunning = true;
   let timer: NodeJS.Timeout | null = null;
+  let lastCleanupAt = 0;
+  const ONE_HOUR_MS = 60 * 60 * 1000;
 
   async function loop() {
     if (!isRunning) return;
     try {
       await processOutboxBatch(10);
+
+      const now = Date.now();
+      if (now - lastCleanupAt >= ONE_HOUR_MS) {
+        lastCleanupAt = now;
+        await cleanupExpiredIdempotencyKeys(24);
+      }
     } catch (err) {
-      console.error('[Outbox Worker Loop Error]:', err);
+      error('[Outbox Worker Loop Error]:', err);
     } finally {
       if (isRunning) {
         timer = setTimeout(loop, intervalMs);
@@ -234,7 +285,7 @@ export function startOutboxWorker(intervalMs: number = 3000): { stop: () => void
     stop: () => {
       isRunning = false;
       if (timer) clearTimeout(timer);
-      console.log('[Outbox Worker] Worker stopped.');
+      log('[Outbox Worker] Worker stopped.');
     },
   };
 }

@@ -8,11 +8,11 @@ services:
       POSTGRES_PASSWORD: workdesk_secret
       POSTGRES_DB: workdesk
     ports:
-      - "5432:5432"
+      - '5432:5432'
     volumes:
       - workdesk_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U workdesk -d workdesk"]
+      test: ['CMD-SHELL', 'pg_isready -U workdesk -d workdesk']
       interval: 3s
       timeout: 3s
       retries: 5
@@ -31,7 +31,7 @@ services:
       SEED_ITEMS: ${SEED_ITEMS:-20000}
       NODE_ENV: production
     ports:
-      - "4000:4000"
+      - '4000:4000'
     depends_on:
       workdesk-db:
         condition: service_healthy
@@ -45,7 +45,7 @@ services:
     environment:
       API_TARGET: http://workdesk-api:4000
     ports:
-      - "3000:3000"
+      - '3000:3000'
     depends_on:
       - workdesk-api
 
