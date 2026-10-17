@@ -555,5 +555,43 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       expect(afterRun2.rows[0].attempts).toBe(2);
       expect(afterRun2.rows[0].status).toBe('failed');
     });
+
+    it('reclaims stale processing jobs stuck for >60s and retries until completion', async () => {
+      const staleEventId = crypto.randomUUID();
+
+      // Insert an outbox event stuck in 'processing' with locked_at 70 seconds ago
+      await pool.query(
+        `INSERT INTO outbox_events (id, event_type, payload, status, attempts, max_attempts, next_run_at, locked_at)
+         VALUES ($1, 'ITEM_CREATED_NOTIFICATION', '{"team_id":"team_billing","title":"Stale recovered job"}'::jsonb, 'processing', 0, 2, NOW(), NOW() - INTERVAL '70 seconds');`,
+        [staleEventId]
+      );
+
+      // Run batch: should reclaim stale job, increment attempts to 1, reset locked_at, and schedule backoff retry
+      const run1 = await processOutboxBatch(10);
+      expect(run1.reclaimed).toBeGreaterThanOrEqual(1);
+
+      const afterReclaim = await pool.query(
+        'SELECT status, attempts, locked_at FROM outbox_events WHERE id = $1',
+        [staleEventId]
+      );
+      expect(afterReclaim.rows[0].status).toBe('pending');
+      expect(afterReclaim.rows[0].attempts).toBe(1);
+      expect(afterReclaim.rows[0].locked_at).toBeNull();
+
+      // Fast-forward next_run_at to simulate backoff duration elapsing
+      await pool.query('UPDATE outbox_events SET next_run_at = NOW() WHERE id = $1', [staleEventId]);
+
+      // Run batch again: job is now pending and due, so it executes and completes!
+      const run2 = await processOutboxBatch(10);
+      expect(run2.succeeded).toBeGreaterThanOrEqual(1);
+
+      const completed = await pool.query(
+        'SELECT status, attempts, locked_at FROM outbox_events WHERE id = $1',
+        [staleEventId]
+      );
+      expect(completed.rows[0].status).toBe('completed');
+      expect(completed.rows[0].attempts).toBe(2);
+      expect(completed.rows[0].locked_at).toBeNull();
+    });
   });
 });

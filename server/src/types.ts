@@ -84,6 +84,7 @@ export interface OutboxEvent {
   next_run_at: string;
   created_at: string;
   processed_at: string | null;
+  locked_at?: string | null;
 }
 
 export interface CursorPayload {

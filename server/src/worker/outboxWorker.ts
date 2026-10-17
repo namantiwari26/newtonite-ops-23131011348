@@ -50,17 +50,75 @@ async function handleEvent(event: OutboxEvent): Promise<{ success: boolean; resu
 }
 
 /**
+ * Reclaims outbox jobs stuck in 'processing' status for more than 60 seconds.
+ * Increments attempts, applies the same exponential backoff and max-attempt rules, and resets locked_at.
+ */
+export async function reclaimStaleJobs(staleSeconds: number = 60): Promise<number> {
+  const staleJobs = await withTransaction(async (client) => {
+    const { rows } = await client.query<OutboxEvent>(
+      `SELECT * FROM outbox_events 
+       WHERE status = 'processing' 
+         AND locked_at <= NOW() - ($1 || ' seconds')::interval 
+       ORDER BY locked_at ASC 
+       FOR UPDATE SKIP LOCKED;`,
+      [staleSeconds]
+    );
+
+    for (const job of rows) {
+      const newAttempts = job.attempts + 1;
+      const isExhausted = newAttempts >= job.max_attempts;
+      const errorMessage = `Processing lock timed out after ${staleSeconds}s without completion`;
+
+      if (isExhausted) {
+        console.warn(`[Outbox Worker] Stale job ${job.id} exhausted max attempts (${newAttempts}/${job.max_attempts}). Marking failed.`);
+        await client.query(
+          `UPDATE outbox_events 
+           SET status = 'failed', 
+               attempts = $1, 
+               last_error = $2, 
+               processed_at = NOW(), 
+               locked_at = NULL 
+           WHERE id = $3;`,
+          [newAttempts, errorMessage, job.id]
+        );
+      } else {
+        const backoffSeconds = Math.pow(2, newAttempts) * 2;
+        console.warn(`[Outbox Worker] Reclaiming stale job ${job.id} (attempt ${newAttempts}/${job.max_attempts}). Retrying in ${backoffSeconds}s...`);
+        await client.query(
+          `UPDATE outbox_events 
+           SET status = 'pending', 
+               attempts = $1, 
+               last_error = $2, 
+               next_run_at = NOW() + ($3 || ' seconds')::interval, 
+               locked_at = NULL 
+           WHERE id = $4;`,
+          [newAttempts, errorMessage, `${backoffSeconds} seconds`, job.id]
+        );
+      }
+    }
+
+    return rows;
+  });
+
+  return staleJobs.length;
+}
+
+/**
  * Processes a single batch of pending or retryable outbox events.
  */
 export async function processOutboxBatch(batchSize: number = 10): Promise<{
   processed: number;
   succeeded: number;
   failed: number;
+  reclaimed: number;
 }> {
   let succeeded = 0;
   let failed = 0;
 
-  // 1. Fetch and lock candidates using `FOR UPDATE SKIP LOCKED` to allow multiple concurrent workers
+  // 1. Reclaim any jobs stuck in 'processing' for >60 seconds
+  const reclaimed = await reclaimStaleJobs(60);
+
+  // 2. Fetch and lock candidates using `FOR UPDATE SKIP LOCKED` to allow multiple concurrent workers
   const candidates = await withTransaction(async (client) => {
     const { rows } = await client.query<OutboxEvent>(
       `SELECT * FROM outbox_events 
@@ -77,7 +135,8 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
       const ids = rows.map((r) => r.id);
       await client.query(
         `UPDATE outbox_events 
-         SET status = 'processing' 
+         SET status = 'processing', 
+             locked_at = NOW() 
          WHERE id = ANY($1);`,
         [ids]
       );
@@ -87,10 +146,10 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
   });
 
   if (candidates.length === 0) {
-    return { processed: 0, succeeded: 0, failed: 0 };
+    return { processed: 0, succeeded: 0, failed: 0, reclaimed };
   }
 
-  // 2. Process each event individually
+  // 3. Process each event individually
   for (const event of candidates) {
     try {
       await handleEvent(event);
@@ -100,7 +159,8 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
          SET status = 'completed', 
              attempts = attempts + 1, 
              processed_at = NOW(), 
-             last_error = NULL 
+             last_error = NULL, 
+             locked_at = NULL 
          WHERE id = $1;`,
         [event.id]
       );
@@ -117,7 +177,8 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
            SET status = 'failed', 
                attempts = $1, 
                last_error = $2, 
-               processed_at = NOW() 
+               processed_at = NOW(), 
+               locked_at = NULL 
            WHERE id = $3;`,
           [newAttempts, errorMessage, event.id]
         );
@@ -129,7 +190,8 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
            SET status = 'pending', 
                attempts = $1, 
                last_error = $2, 
-               next_run_at = NOW() + ($3 || ' seconds')::interval 
+               next_run_at = NOW() + ($3 || ' seconds')::interval, 
+               locked_at = NULL 
            WHERE id = $4;`,
           [newAttempts, errorMessage, `${backoffSeconds} seconds`, event.id]
         );
@@ -142,6 +204,7 @@ export async function processOutboxBatch(batchSize: number = 10): Promise<{
     processed: candidates.length,
     succeeded,
     failed,
+    reclaimed,
   };
 }
 
