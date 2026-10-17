@@ -13,6 +13,8 @@ interface WorkItemTableProps {
   isFetchingNextPage: boolean;
   onLoadMore: () => void;
   totalCount: number;
+  activeViewTitle?: string;
+  isFiltered?: boolean;
   onClearFilters?: () => void;
   error?: Error | null;
   onRetry?: () => void;
@@ -28,6 +30,8 @@ export const WorkItemTable: React.FC<WorkItemTableProps> = ({
   isFetchingNextPage,
   onLoadMore,
   totalCount,
+  activeViewTitle,
+  isFiltered,
   onClearFilters,
   error,
   onRetry,
@@ -56,6 +60,41 @@ export const WorkItemTable: React.FC<WorkItemTableProps> = ({
         overflow: 'hidden',
       }}
     >
+      {/* Active View Header with View Name and Clear Filters button */}
+      {activeViewTitle && (
+        <div
+          style={{
+            padding: '10px 20px',
+            borderBottom: '1px solid #E5E7EB',
+            background: '#FAFAFA',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <h1 style={{ fontSize: 15, fontWeight: 600, color: '#111827', margin: 0 }}>
+              {activeViewTitle}
+            </h1>
+            <span style={{ fontSize: 12, color: '#6B7280' }}>
+              ({totalCount} {totalCount === 1 ? 'item' : 'items'})
+            </span>
+          </div>
+
+          {isFiltered && onClearFilters && (
+            <button
+              type="button"
+              onClick={onClearFilters}
+              className="btn btn-secondary"
+              style={{ fontSize: 12, height: 26, padding: '0 10px' }}
+              aria-label="Clear all active filters"
+            >
+              Clear filters
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Error banner for list */}
       {error && (
         <div style={{ padding: '12px 16px 0' }}>

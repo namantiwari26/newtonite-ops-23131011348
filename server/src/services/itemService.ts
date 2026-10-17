@@ -34,6 +34,7 @@ export interface ListItemsFilters {
   status?: string;
   priority?: string;
   assignee?: string;
+  exclude_status?: string;
   search?: string;
 }
 
@@ -82,17 +83,52 @@ export async function listItems(
   }
 
   if (filters.status) {
-    conditions.push(`w.status = $${paramIdx++}`);
-    params.push(filters.status);
+    const statuses = filters.status
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (statuses.length === 1) {
+      conditions.push(`w.status = $${paramIdx++}`);
+      params.push(statuses[0]);
+    } else if (statuses.length > 1) {
+      conditions.push(`w.status = ANY($${paramIdx++})`);
+      params.push(statuses);
+    }
+  }
+
+  if (filters.exclude_status) {
+    const excluded = filters.exclude_status
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (excluded.length === 1) {
+      conditions.push(`w.status != $${paramIdx++}`);
+      params.push(excluded[0]);
+    } else if (excluded.length > 1) {
+      conditions.push(`w.status != ALL($${paramIdx++})`);
+      params.push(excluded);
+    }
   }
 
   if (filters.priority) {
-    conditions.push(`w.priority = $${paramIdx++}`);
-    params.push(filters.priority);
+    const priorities = filters.priority
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (priorities.length === 1) {
+      conditions.push(`w.priority = $${paramIdx++}`);
+      params.push(priorities[0]);
+    } else if (priorities.length > 1) {
+      conditions.push(`w.priority = ANY($${paramIdx++})`);
+      params.push(priorities);
+    }
   }
 
   if (filters.assignee === 'unassigned') {
     conditions.push(`w.assignee_id IS NULL`);
+  } else if (filters.assignee === 'me') {
+    conditions.push(`w.assignee_id = $${paramIdx++}`);
+    params.push(user.id);
   } else if (filters.assignee) {
     conditions.push(`w.assignee_id = $${paramIdx++}`);
     params.push(filters.assignee);

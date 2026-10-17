@@ -1,80 +1,42 @@
 import React from 'react';
-import { Team, User, WORK_ITEM_STATUSES, STATUS_LABELS, WorkItemStatus } from '../types.js';
+import { Team, User, WORK_ITEM_STATUSES, STATUS_LABELS } from '../types.js';
+import { FilterState, getFilterChips } from '../filterUtils.js';
 import { X } from 'lucide-react';
 
 interface FilterToolbarProps {
   teams: Team[];
   users: User[];
-  status: string;
-  priority: string;
-  teamId: string;
-  assignee: string;
-  onFilterChange: (filters: {
-    status?: string;
-    priority?: string;
-    team_id?: string;
-    assignee?: string;
-  }) => void;
+  currentUser?: User | null;
+  filters: FilterState;
+  onFilterChange: (updates: Partial<FilterState>) => void;
   onClearAll: () => void;
 }
 
 export const FilterToolbar: React.FC<FilterToolbarProps> = ({
   teams,
   users,
-  status,
-  priority,
-  teamId,
-  assignee,
+  currentUser,
+  filters,
   onFilterChange,
   onClearAll,
 }) => {
-  const activeChips: Array<{ key: string; label: string; onRemove: () => void }> = [];
+  const activeChips = getFilterChips(filters, teams, users, currentUser?.id);
 
-  if (status) {
-    activeChips.push({
-      key: 'status',
-      label: `Status: ${STATUS_LABELS[status as WorkItemStatus] || status.replace('_', ' ')}`,
-      onRemove: () => onFilterChange({ status: '' }),
-    });
-  }
-
-  if (priority) {
-    activeChips.push({
-      key: 'priority',
-      label: `Priority: ${priority}`,
-      onRemove: () => onFilterChange({ priority: '' }),
-    });
-  }
-
-  if (teamId) {
-    const teamName = teams.find((t) => t.id === teamId)?.name || teamId;
-    activeChips.push({
-      key: 'team',
-      label: `Team: ${teamName}`,
-      onRemove: () => onFilterChange({ team_id: '' }),
-    });
-  }
-
-  if (assignee) {
-    const assigneeName =
-      assignee === 'unassigned'
-        ? 'Unassigned'
-        : users.find((u) => u.id === assignee)?.name || assignee;
-    activeChips.push({
-      key: 'assignee',
-      label: `Assignee: ${assigneeName}`,
-      onRemove: () => onFilterChange({ assignee: '' }),
-    });
-  }
+  // Selected value for assignee dropdown
+  const assigneeSelectValue =
+    filters.assignee === 'me' || (currentUser && filters.assignee === currentUser.id)
+      ? 'me'
+      : filters.assignee;
 
   return (
     <div className="filter-toolbar">
       {/* Dropdown controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        {/* Status Dropdown */}
         <select
           className="select"
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
-          value={status}
+          value={filters.status}
           onChange={(e) => onFilterChange({ status: e.target.value })}
           aria-label="Filter by status"
         >
@@ -86,24 +48,27 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           ))}
         </select>
 
+        {/* Priority Dropdown */}
         <select
           className="select"
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
-          value={priority}
+          value={filters.priority}
           onChange={(e) => onFilterChange({ priority: e.target.value })}
           aria-label="Filter by priority"
         >
           <option value="">Priority: All</option>
+          <option value="critical,high">Urgent (Critical & High)</option>
           <option value="critical">Critical</option>
           <option value="high">High</option>
           <option value="medium">Medium</option>
           <option value="low">Low</option>
         </select>
 
+        {/* Team Dropdown */}
         <select
           className="select"
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
-          value={teamId}
+          value={filters.team_id}
           onChange={(e) => onFilterChange({ team_id: e.target.value })}
           aria-label="Filter by team"
         >
@@ -115,22 +80,32 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           ))}
         </select>
 
+        {/* Assignee Dropdown */}
         <select
           className="select"
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
-          value={assignee}
-          onChange={(e) => onFilterChange({ assignee: e.target.value })}
+          value={assigneeSelectValue}
+          onChange={(e) => {
+            const val = e.target.value;
+            onFilterChange({
+              assignee: val === 'me' && currentUser ? currentUser.id : val,
+            });
+          }}
           aria-label="Filter by assignee"
         >
           <option value="">Assignee: All</option>
+          <option value="me">Assigned to me</option>
           <option value="unassigned">Unassigned</option>
-          {users.map((u) => (
-            <option key={u.id} value={u.id}>
-              {u.name}
-            </option>
-          ))}
+          {users
+            .filter((u) => !currentUser || u.id !== currentUser.id)
+            .map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name}
+              </option>
+            ))}
         </select>
 
+        {/* Clear filters button in toolbar if chips are present */}
         {activeChips.length > 0 && (
           <button
             type="button"
@@ -144,7 +119,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
         )}
       </div>
 
-      {/* Active filter chips */}
+      {/* Active filter chips (one-to-one with active query parameters) */}
       {activeChips.length > 0 && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           {activeChips.map((chip) => (
@@ -152,7 +127,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
               <span>{chip.label}</span>
               <button
                 type="button"
-                onClick={chip.onRemove}
+                onClick={() => onFilterChange({ [chip.paramKey]: chip.nextValue })}
                 className="filter-chip-remove"
                 title={`Remove filter: ${chip.label}`}
                 aria-label={`Remove filter: ${chip.label}`}

@@ -1,8 +1,7 @@
 import React from 'react';
 import { User, Team } from '../types.js';
-import { CheckSquare, AlertCircle, Inbox, Layers, LogOut } from 'lucide-react';
-
-export type NavView = 'all' | 'my_work' | 'needs_approval' | 'unassigned_urgent';
+import { NavView } from '../filterUtils.js';
+import { CheckSquare, AlertCircle, Inbox, Layers, LogOut, SlidersHorizontal } from 'lucide-react';
 
 export function getUserDisplayRole(user: User, teams: Team[] = []): string {
   if (user.is_admin) {
@@ -68,6 +67,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'my_work', label: 'My Work', icon: <CheckSquare size={16} /> },
     { id: 'needs_approval', label: 'Needs Approval', icon: <AlertCircle size={16} /> },
     { id: 'unassigned_urgent', label: 'Unassigned Urgent', icon: <Inbox size={16} /> },
+    ...(currentView === 'custom'
+      ? [{ id: 'custom' as NavView, label: 'Custom Filter', icon: <SlidersHorizontal size={16} /> }]
+      : []),
   ];
 
   return (

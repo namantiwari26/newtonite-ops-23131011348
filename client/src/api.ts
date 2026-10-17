@@ -74,6 +74,7 @@ export interface ListItemsParams {
   status?: string;
   priority?: string;
   assignee?: string;
+  exclude_status?: string;
   search?: string;
   cursor?: string;
   limit?: number;
@@ -92,6 +93,7 @@ export async function fetchItems(params: ListItemsParams): Promise<ListItemsResp
   if (params.status) query.set('status', params.status);
   if (params.priority) query.set('priority', params.priority);
   if (params.assignee) query.set('assignee', params.assignee);
+  if (params.exclude_status) query.set('exclude_status', params.exclude_status);
   if (params.search) query.set('search', params.search);
   if (params.cursor) query.set('cursor', params.cursor);
   if (params.limit) query.set('limit', params.limit.toString());

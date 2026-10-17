@@ -12,12 +12,19 @@ import {
 } from './api.js';
 import { User, WorkItem } from './types.js';
 import { LoginPage } from './components/LoginPage.js';
-import { Sidebar, NavView } from './components/Sidebar.js';
+import { Sidebar } from './components/Sidebar.js';
 import { TopNav } from './components/TopNav.js';
 import { FilterToolbar } from './components/FilterToolbar.js';
 import { WorkItemTable } from './components/WorkItemTable.js';
 import { ItemDetailPanel } from './components/ItemDetailPanel.js';
 import { NewItemModal } from './components/NewItemModal.js';
+import {
+  FilterState,
+  DEFAULT_FILTERS,
+  getViewFilters,
+  VIEW_TITLES,
+  detectActiveView,
+} from './filterUtils.js';
 
 export function App() {
   const queryClient = useQueryClient();
@@ -84,34 +91,20 @@ export function App() {
     };
   }, []);
 
-  // 2. Navigation View State
-  const [currentView, setCurrentView] = useState<NavView>('all');
-
-  // 3. Search and Filters State
+  // 2. Single Source of Truth for Filters and Search
+  const [filters, setFilters] = useState<FilterState>(DEFAULT_FILTERS);
   const [search, setSearch] = useState('');
-  const [filters, setFilters] = useState({
-    status: '',
-    priority: '',
-    team_id: '',
-    assignee: '',
-  });
+
+  // 3. Derive active navigation view purely from the single filter state
+  const activeView = useMemo(
+    () => detectActiveView(filters, search, currentUser?.id),
+    [filters, search, currentUser?.id]
+  );
 
   // 4. Detail Panel & Modals
   const [selectedItemId, setSelectedItemId] = useState<string | null>(null);
   const [isNewItemModalOpen, setIsNewItemModalOpen] = useState(false);
   const [conflictError, setConflictError] = useState<string | null>(null);
-
-  // Sync sidebar view with filter query params
-  const effectiveFilters = {
-    ...filters,
-    search: search.trim() || undefined,
-    // Map navigation views to server query parameters
-    ...(currentView === 'my_work' && currentUser ? { assignee: currentUser.id } : {}),
-    ...(currentView === 'needs_approval' ? { status: 'awaiting_approval' } : {}),
-    ...(currentView === 'unassigned_urgent'
-      ? { assignee: 'unassigned', priority: 'critical' }
-      : {}),
-  };
 
   // Fetch Teams and Users
   const { data: teams = [] } = useQuery({
@@ -146,6 +139,7 @@ export function App() {
   }, [currentUser, users, userTeamIds]);
 
   // Fetch Work Items with Server-Side Keyset Cursor Pagination
+  // Built strictly and exclusively from the single filter state object
   const {
     data: itemsPages,
     isLoading: isLoadingItems,
@@ -155,15 +149,16 @@ export function App() {
     refetch: refetchItems,
     error: itemsError,
   } = useInfiniteQuery({
-    queryKey: ['items', effectiveFilters, currentUser?.id],
+    queryKey: ['items', filters, search, currentUser?.id],
     initialPageParam: '',
     queryFn: ({ pageParam }) =>
       fetchItems({
-        team_id: effectiveFilters.team_id || undefined,
-        status: effectiveFilters.status || undefined,
-        priority: effectiveFilters.priority || undefined,
-        assignee: effectiveFilters.assignee || undefined,
-        search: effectiveFilters.search,
+        team_id: filters.team_id || undefined,
+        status: filters.status || undefined,
+        priority: filters.priority || undefined,
+        assignee: filters.assignee || undefined,
+        exclude_status: filters.exclude_status || undefined,
+        search: search.trim() || undefined,
         cursor: pageParam || undefined,
         limit: 10,
       }),
@@ -297,9 +292,10 @@ export function App() {
     <div className="app-container">
       {/* Sidebar with Navigation and User Profile */}
       <Sidebar
-        currentView={currentView}
+        currentView={activeView}
         onSelectView={(view) => {
-          setCurrentView(view);
+          setFilters(getViewFilters(view, currentUser?.id));
+          setSearch('');
           setSelectedItemId(null);
         }}
         currentUser={currentUser}
@@ -320,19 +316,13 @@ export function App() {
         <FilterToolbar
           teams={availableTeams}
           users={availableUsers}
-          status={filters.status}
-          priority={filters.priority}
-          teamId={filters.team_id}
-          assignee={filters.assignee}
+          currentUser={currentUser}
+          filters={filters}
           onFilterChange={(newFilters) => setFilters((prev) => ({ ...prev, ...newFilters }))}
-          onClearAll={() =>
-            setFilters({
-              status: '',
-              priority: '',
-              team_id: '',
-              assignee: '',
-            })
-          }
+          onClearAll={() => {
+            setFilters(DEFAULT_FILTERS);
+            setSearch('');
+          }}
         />
 
         {/* Table & Right Detail Panel Container */}
@@ -348,17 +338,16 @@ export function App() {
             isFetchingNextPage={isFetchingNextPage}
             onLoadMore={() => fetchNextPage()}
             totalCount={totalCount}
-            error={itemsError as Error | null}
-            onRetry={() => refetchItems()}
+            activeViewTitle={VIEW_TITLES[activeView]}
+            isFiltered={
+              activeView !== 'all' || !!search.trim() || Object.values(filters).some(Boolean)
+            }
             onClearFilters={() => {
-              setFilters({
-                status: '',
-                priority: '',
-                team_id: '',
-                assignee: '',
-              });
+              setFilters(DEFAULT_FILTERS);
               setSearch('');
             }}
+            error={itemsError as Error | null}
+            onRetry={() => refetchItems()}
           />
 
           {/* Right-Side Item Detail Panel */}

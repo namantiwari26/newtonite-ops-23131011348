@@ -22,6 +22,7 @@ export async function listItems(req: Request, res: Response, next: NextFunction)
     const status = (req.query.status as string) || '';
     const priority = (req.query.priority as string) || '';
     const assignee = (req.query.assignee as string) || '';
+    const excludeStatus = (req.query.exclude_status as string) || '';
     const search = (req.query.search as string) || '';
     const cursorStr = (req.query.cursor as string) || '';
 
@@ -43,7 +44,7 @@ export async function listItems(req: Request, res: Response, next: NextFunction)
     }
 
     const result = await itemService.listItems(
-      { team_id: teamId, status, priority, assignee, search },
+      { team_id: teamId, status, priority, assignee, exclude_status: excludeStatus, search },
       limit,
       cursor,
       user
