@@ -15,7 +15,7 @@ declare global {
 
 /**
  * Authentication middleware for Workdesk.
- * 
+ *
  * Extracts and verifies the HS256 JWT from the Authorization header: `Bearer <token>`.
  * Reads sub (the user id) from the verified token, loads user and team memberships,
  * and attaches req.user.

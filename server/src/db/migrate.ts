@@ -7,8 +7,16 @@ import { pool, withTransaction } from './pool.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+const isTest = process.env.NODE_ENV === 'test';
+const log = (...args: any[]) => {
+  if (!isTest) console.log(...args);
+};
+const warn = (...args: any[]) => {
+  if (!isTest) console.warn(...args);
+};
+
 export async function runMigrations(): Promise<void> {
-  console.log('[Migration Runner] Checking and executing plain SQL migrations...');
+  log('[Migration Runner] Checking and executing plain SQL migrations...');
 
   // Ensure migration tracking table exists
   await pool.query(`
@@ -28,7 +36,7 @@ export async function runMigrations(): Promise<void> {
   }
 
   if (!fs.existsSync(migrationsDir)) {
-    console.warn(`[Migration Runner] Directory not found: ${migrationsDir}`);
+    warn(`[Migration Runner] Directory not found: ${migrationsDir}`);
     return;
   }
 
@@ -39,33 +47,28 @@ export async function runMigrations(): Promise<void> {
     .sort();
 
   // Retrieve already applied migrations
-  const { rows } = await pool.query<{ version: string }>(
-    'SELECT version FROM schema_migrations'
-  );
+  const { rows } = await pool.query<{ version: string }>('SELECT version FROM schema_migrations');
   const applied = new Set(rows.map((r) => r.version));
 
   for (const file of migrationFiles) {
     if (!applied.has(file)) {
-      console.log(`[Migration Runner] Applying migration: ${file}...`);
+      log(`[Migration Runner] Applying migration: ${file}...`);
       const filePath = path.join(migrationsDir, file);
       const sqlContent = fs.readFileSync(filePath, 'utf-8');
 
       // Execute each migration inside a dedicated transaction
       await withTransaction(async (client) => {
         await client.query(sqlContent);
-        await client.query(
-          'INSERT INTO schema_migrations (version) VALUES ($1)',
-          [file]
-        );
+        await client.query('INSERT INTO schema_migrations (version) VALUES ($1)', [file]);
       });
 
-      console.log(`[Migration Runner] Successfully applied: ${file}`);
+      log(`[Migration Runner] Successfully applied: ${file}`);
     } else {
-      console.log(`[Migration Runner] Already applied: ${file}`);
+      log(`[Migration Runner] Already applied: ${file}`);
     }
   }
 
-  console.log('[Migration Runner] All migrations are up to date.');
+  log('[Migration Runner] All migrations are up to date.');
 }
 
 // Allow direct execution: `tsx src/db/migrate.ts`

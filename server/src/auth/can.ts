@@ -6,14 +6,7 @@
  */
 
 export type Action =
-  | 'view'
-  | 'create'
-  | 'update'
-  | 'claim'
-  | 'transition'
-  | 'approve'
-  | 'delete'
-  | 'comment';
+  'view' | 'create' | 'update' | 'claim' | 'transition' | 'approve' | 'delete' | 'comment';
 
 export interface UserTeamMembership {
   team_id: string;
@@ -38,7 +31,7 @@ export interface WorkItemTarget {
 
 /**
  * Updated Role by Action Matrix:
- * 
+ *
  * | Action     | Viewer | Member | Lead | Admin |
  * | :--------- | :----: | :----: | :--: | :---: |
  * | view       |   ✔    |   ✔    |  ✔   |   ✔   |
@@ -49,17 +42,13 @@ export interface WorkItemTarget {
  * | transition |   ✖    |   ✔    |  ✔   |   ✔   |
  * | approve    |   ✖    |   ✖    |  ✔   |   ✔   |
  * | delete     |   ✖    |   ✖    |  ✔   |   ✔   |
- * 
+ *
  * Note: Members can move items up to awaiting_approval via 'transition'.
  * Approving (awaiting_approval -> resolved) or rejecting (awaiting_approval -> in_progress)
  * requires 'approve', which is restricted exclusively to Team Leads and Administrators.
  * Users outside an item's team have no membership and receive false (resulting in 404).
  */
-export function can(
-  user: AuthUser,
-  action: Action,
-  item: WorkItemTarget
-): boolean {
+export function can(user: AuthUser, action: Action, item: WorkItemTarget): boolean {
   if (!user || !user.id || !item || !item.team_id) {
     return false;
   }

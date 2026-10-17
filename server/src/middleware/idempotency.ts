@@ -27,7 +27,7 @@ export function hashRequestBody(body: any): string {
 
 /**
  * Idempotency enforcement middleware for POST requests.
- * 
+ *
  * - Rejects requests without Idempotency-Key (400)
  * - Stores key, user_id, request_hash, status_code, and response_body
  * - Same key + same body -> returns stored response
@@ -46,7 +46,8 @@ export async function requireIdempotency(
   if (!idempotencyKey || !idempotencyKey.trim()) {
     res.status(400).json({
       error: 'MISSING_IDEMPOTENCY_KEY',
-      message: 'Idempotency-Key header is required for this operation to prevent duplicate execution.',
+      message:
+        'Idempotency-Key header is required for this operation to prevent duplicate execution.',
     });
     return;
   }
@@ -71,21 +72,25 @@ export async function requireIdempotency(
       const originalJson = res.json.bind(res);
       res.json = (body: any): Response => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
-          pool.query(
-            `UPDATE idempotency_keys 
+          pool
+            .query(
+              `UPDATE idempotency_keys 
              SET status_code = $1, response_body = $2 
              WHERE user_id = $3 AND key = $4`,
-            [res.statusCode, JSON.stringify(body), userId, trimmedKey]
-          ).catch((err) => {
-            console.error('[Idempotency Store Error]:', err);
-          });
+              [res.statusCode, JSON.stringify(body), userId, trimmedKey]
+            )
+            .catch((err) => {
+              console.error('[Idempotency Store Error]:', err);
+            });
         } else {
           // If request failed with error code, clean up pending reservation so it can be retried
-          pool.query(
-            `DELETE FROM idempotency_keys 
+          pool
+            .query(
+              `DELETE FROM idempotency_keys 
              WHERE user_id = $1 AND key = $2 AND status_code IS NULL`,
-            [userId, trimmedKey]
-          ).catch(() => {});
+              [userId, trimmedKey]
+            )
+            .catch(() => {});
         }
         return originalJson(body);
       };

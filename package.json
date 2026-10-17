@@ -9,6 +9,11 @@
     "seed": "npm --prefix server run seed",
     "worker": "npm --prefix server run worker",
     "test": "npm --prefix server test",
-    "build": "npm --prefix server run build ; npm --prefix client run build"
+    "typecheck": "npm --prefix server run typecheck && npm --prefix client run typecheck",
+    "format": "prettier --write .",
+    "build": "npm --prefix server run build && npm --prefix client run build"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10"
   }
 }
