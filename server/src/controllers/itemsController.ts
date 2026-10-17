@@ -519,6 +519,26 @@ export async function updateItem(req: Request, res: Response): Promise<void> {
         throw err;
       }
 
+      const changes: Record<string, any> = {};
+      if (title !== undefined && title.trim() !== currentItem.title) {
+        changes.title = { from: currentItem.title, to: newTitle };
+      }
+      if (description !== undefined && description.trim() !== currentItem.description) {
+        changes.description = { from: currentItem.description, to: newDescription };
+      }
+      if (priority !== undefined && priority !== currentItem.priority) {
+        changes.priority = { from: currentItem.priority, to: newPriority };
+      }
+      if (status !== undefined && status !== currentItem.status) {
+        changes.status = { from: currentItem.status, to: newStatus };
+      }
+      if (assignee_id !== undefined && assignee_id !== currentItem.assignee_id) {
+        changes.assignee_id = { from: currentItem.assignee_id, to: newAssignee };
+      }
+      if (due_date !== undefined && due_date !== currentItem.due_date) {
+        changes.due_date = { from: currentItem.due_date, to: newDueDate };
+      }
+
       await client.query(
         `INSERT INTO activity_events (id, item_id, actor_id, action, details)
          VALUES ($1, $2, $3, 'updated', $4);`,
@@ -527,13 +547,7 @@ export async function updateItem(req: Request, res: Response): Promise<void> {
           id,
           user.id,
           JSON.stringify({
-            changes: {
-              ...(title !== undefined && { title: newTitle }),
-              ...(description !== undefined && { description: newDescription }),
-              ...(priority !== undefined && { priority: newPriority }),
-              ...(status !== undefined && { status: newStatus }),
-              ...(assignee_id !== undefined && { assignee_id: newAssignee }),
-            },
+            changes: Object.keys(changes).length > 0 ? changes : { properties: 'updated' },
             actor_name: user.name,
           }),
         ]
@@ -602,14 +616,36 @@ export async function addComment(req: Request, res: Response): Promise<void> {
   }
 
   const commentId = crypto.randomUUID();
-  const commentResult = await pool.query<Comment>(
-    `INSERT INTO comments (id, item_id, user_id, content)
-     VALUES ($1, $2, $3, $4)
-     RETURNING *;`,
-    [commentId, id, user.id, content.trim()]
-  );
+  const activityId = crypto.randomUUID();
+  const trimmedContent = content.trim();
 
-  const comment = { ...commentResult.rows[0], user_name: user.name };
+  const comment = await withTransaction(async (client) => {
+    const commentResult = await client.query<Comment>(
+      `INSERT INTO comments (id, item_id, user_id, content)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *;`,
+      [commentId, id, user.id, trimmedContent]
+    );
+
+    await client.query(
+      `INSERT INTO activity_events (id, item_id, actor_id, action, details)
+       VALUES ($1, $2, $3, 'comment', $4);`,
+      [
+        activityId,
+        id,
+        user.id,
+        JSON.stringify({
+          comment_id: commentId,
+          actor: user.name,
+          actor_name: user.name,
+          content: trimmedContent,
+        }),
+      ]
+    );
+
+    return { ...commentResult.rows[0], user_name: user.name };
+  });
+
   res.status(201).json({ comment });
 }
 

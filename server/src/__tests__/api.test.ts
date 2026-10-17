@@ -505,6 +505,34 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       expect(res.status).toBe(201);
       expect(res.body.comment.content).toBe('Investigation notes added by team member');
     });
+
+    it('creates an activity_event with action=comment in the same transaction when adding a comment', async () => {
+      const itemRes = await pool.query<WorkItem>(
+        "SELECT * FROM work_items WHERE team_id = 'team_billing' LIMIT 1"
+      );
+      const item = itemRes.rows[0];
+
+      const res = await request(app)
+        .post(`/api/items/${item.id}/comments`)
+        .set('Authorization', `Bearer ${priyaToken}`)
+        .send({ content: 'Verifying atomic comment activity event' });
+
+      expect(res.status).toBe(201);
+      const commentId = res.body.comment.id;
+
+      const activityRes = await pool.query(
+        "SELECT * FROM activity_events WHERE item_id = $1 AND action = 'comment'",
+        [item.id]
+      );
+      expect(activityRes.rows.length).toBeGreaterThanOrEqual(1);
+
+      const matchingActivity = activityRes.rows.find(
+        (r) => r.details?.comment_id === commentId
+      );
+      expect(matchingActivity).toBeDefined();
+      expect(matchingActivity.actor_id).toBe('usr_priya');
+      expect(matchingActivity.details.content).toBe('Verifying atomic comment activity event');
+    });
   });
 
   // 6. Transactional Outbox Worker & Retries
