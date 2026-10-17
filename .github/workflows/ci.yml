@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Build, Typecheck, and Test
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: workdesk
+          POSTGRES_PASSWORD: workdesk_secret
+          POSTGRES_DB: workdesk_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://workdesk:workdesk_secret@localhost:5432/workdesk_test
+      JWT_SECRET: workdesk_production_jwt_secret_key_32_chars_long
+      NODE_ENV: test
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm --prefix server ci
+          npm --prefix client ci
+
+      - name: Run Typecheck (Server & Client)
+        run: npm run typecheck
+
+      - name: Run Build (Server & Client)
+        run: npm run build
+
+      - name: Run Server Integration Tests
+        run: npm --prefix server test
