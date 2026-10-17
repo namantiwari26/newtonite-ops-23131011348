@@ -6,6 +6,7 @@ const TEST_DATABASE_URL =
   process.env.TEST_DATABASE_URL ||
   'postgres://workdesk:workdesk_secret@localhost:5432/workdesk_test';
 
+process.env.NODE_ENV = 'test';
 process.env.DATABASE_URL = TEST_DATABASE_URL;
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test_jwt_secret_key_minimum_32_characters';
 process.env.SEED_ITEMS = process.env.SEED_ITEMS || '100';
@@ -38,7 +39,9 @@ const { seedData } = await import('../db/seed.js');
 // 4. Run migrations once on workdesk_test
 beforeAll(async () => {
   const currentDb = await pool.query<{ current_database: string }>('SELECT current_database();');
-  console.log(`[Test Setup] Connected to isolated test database: ${currentDb.rows[0].current_database}`);
+  console.log(
+    `[Test Setup] Connected to isolated test database: ${currentDb.rows[0].current_database}`
+  );
   await runMigrations();
   await seedData();
 });

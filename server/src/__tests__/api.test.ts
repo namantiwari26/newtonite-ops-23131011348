@@ -4,7 +4,7 @@ import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { app } from '../app.js';
 import { pool } from '../db/pool.js';
-import { processOutboxBatch } from '../worker/outboxWorker.js';
+import { processOutboxBatch, cleanupExpiredIdempotencyKeys } from '../worker/outboxWorker.js';
 import { getJwtSecret } from '../controllers/authController.js';
 import { WorkItem } from '../types.js';
 
@@ -30,12 +30,10 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
   // 1. Authentication Tests
   describe('Authentication & JWT (HS256, sub-only, 8h)', () => {
     it('successfully logs in an existing user with Demo@12345 and returns HS256 sub JWT', async () => {
-      const res = await request(app)
-        .post('/api/auth/login')
-        .send({
-          email: 'alex.vance@workdesk.test',
-          password: 'Demo@12345',
-        });
+      const res = await request(app).post('/api/auth/login').send({
+        email: 'alex.vance@workdesk.test',
+        password: 'Demo@12345',
+      });
 
       expect(res.status).toBe(200);
       expect(res.body.token).toBeDefined();
@@ -48,12 +46,10 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
     });
 
     it('rejects login with 401 and generic message when wrong password is provided', async () => {
-      const res = await request(app)
-        .post('/api/auth/login')
-        .send({
-          email: 'alex.vance@workdesk.test',
-          password: 'WrongPassword!',
-        });
+      const res = await request(app).post('/api/auth/login').send({
+        email: 'alex.vance@workdesk.test',
+        password: 'WrongPassword!',
+      });
 
       expect(res.status).toBe(401);
       expect(res.body.error).toBe('INVALID_CREDENTIALS');
@@ -61,12 +57,10 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
     });
 
     it('rejects login with 401 when email does not exist', async () => {
-      const res = await request(app)
-        .post('/api/auth/login')
-        .send({
-          email: 'nonexistent@workdesk.test',
-          password: 'Demo@12345',
-        });
+      const res = await request(app).post('/api/auth/login').send({
+        email: 'nonexistent@workdesk.test',
+        password: 'Demo@12345',
+      });
 
       expect(res.status).toBe(401);
       expect(res.body.error).toBe('INVALID_CREDENTIALS');
@@ -90,6 +84,41 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       expect(res.status).toBe(200);
       expect(Array.isArray(res.body.items)).toBe(true);
       expect(res.body.total_count).toBeGreaterThan(0);
+    });
+
+    it('rejects login with 429 TOO_MANY_REQUESTS after exceeding 10 attempts per 15 min per IP and email', async () => {
+      const rateLimitEmail = 'ratelimit.test@workdesk.test';
+      for (let i = 0; i < 10; i++) {
+        const res = await request(app)
+          .post('/api/auth/login')
+          .send({ email: rateLimitEmail, password: 'WrongPassword123' });
+        expect(res.status).toBe(401);
+      }
+
+      // 11th attempt must be rejected with 429
+      const blockedRes = await request(app)
+        .post('/api/auth/login')
+        .send({ email: rateLimitEmail, password: 'WrongPassword123' });
+
+      expect(blockedRes.status).toBe(429);
+      expect(blockedRes.body.error).toBe('TOO_MANY_REQUESTS');
+      expect(blockedRes.body.message).toMatch(/too many login attempts/i);
+    });
+
+    it('includes standard security headers configured via helmet', async () => {
+      const res = await request(app).get('/health');
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['x-frame-options']).toBe('SAMEORIGIN');
+    });
+
+    it('rejects a JWT_SECRET shorter than 32 characters at startup', () => {
+      const originalSecret = process.env.JWT_SECRET;
+      try {
+        process.env.JWT_SECRET = 'short_key_under_32_characters';
+        expect(() => getJwtSecret()).toThrow(/at least 32 characters long/);
+      } finally {
+        process.env.JWT_SECRET = originalSecret;
+      }
     });
   });
 
@@ -118,11 +147,12 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       );
       const item = itemRes.rows[0];
 
-      await pool.query(
-        "UPDATE work_items SET status = 'awaiting_approval' WHERE id = $1",
-        [item.id]
-      );
-      const fresh = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id])).rows[0];
+      await pool.query("UPDATE work_items SET status = 'awaiting_approval' WHERE id = $1", [
+        item.id,
+      ]);
+      const fresh = (
+        await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id])
+      ).rows[0];
 
       // Marcus Chen is a member (not lead) of team_billing
       const res = await request(app)
@@ -167,7 +197,9 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       expect(res.body.item).toBeDefined();
 
       // Verify that database record was not modified
-      const checkRes = await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [originalItem.id]);
+      const checkRes = await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [
+        originalItem.id,
+      ]);
       const currentItem = checkRes.rows[0];
       expect(currentItem.status).toBe(originalItem.status);
       expect(currentItem.version).toBe(originalItem.version);
@@ -194,11 +226,11 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
         request(app)
           .post(`/api/items/${testItem.id}/claim`)
           .set('Authorization', `Bearer ${priyaToken}`)
-          .send({ expected_version: testItem.version }),
+          .send({ version: testItem.version }),
         request(app)
           .post(`/api/items/${testItem.id}/claim`)
           .set('Authorization', `Bearer ${marcusToken}`)
-          .send({ expected_version: testItem.version }),
+          .send({ version: testItem.version }),
       ]);
 
       const statuses = [res1.status, res2.status].sort();
@@ -326,10 +358,9 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       const batch1 = await processOutboxBatch(10);
       expect(batch1.processed).toBeGreaterThanOrEqual(1);
 
-      const check1 = await pool.query(
-        'SELECT status, attempts FROM outbox_events WHERE id = $1',
-        [outboxId]
-      );
+      const check1 = await pool.query('SELECT status, attempts FROM outbox_events WHERE id = $1', [
+        outboxId,
+      ]);
       expect(check1.rows[0].status).toBe('completed');
       expect(check1.rows[0].attempts).toBe(1);
 
@@ -337,10 +368,9 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       await processOutboxBatch(10);
 
       // The completed event was NOT processed a second time (attempts remains 1)
-      const check2 = await pool.query(
-        'SELECT status, attempts FROM outbox_events WHERE id = $1',
-        [outboxId]
-      );
+      const check2 = await pool.query('SELECT status, attempts FROM outbox_events WHERE id = $1', [
+        outboxId,
+      ]);
       expect(check2.rows[0].status).toBe('completed');
       expect(check2.rows[0].attempts).toBe(1);
     });
@@ -418,14 +448,16 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
         .set('Authorization', `Bearer ${priyaToken}`)
         .send({ to: 'in_progress', version: item.version });
 
-      item = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id])).rows[0];
+      item = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id]))
+        .rows[0];
 
       await request(app)
         .post(`/api/items/${item.id}/transition`)
         .set('Authorization', `Bearer ${priyaToken}`)
         .send({ to: 'awaiting_approval', version: item.version });
 
-      item = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id])).rows[0];
+      item = (await pool.query<WorkItem>('SELECT * FROM work_items WHERE id = $1', [item.id]))
+        .rows[0];
       expect(item.status).toBe('awaiting_approval');
 
       // Lead rejects: awaiting_approval -> in_progress
@@ -526,9 +558,7 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       );
       expect(activityRes.rows.length).toBeGreaterThanOrEqual(1);
 
-      const matchingActivity = activityRes.rows.find(
-        (r) => r.details?.comment_id === commentId
-      );
+      const matchingActivity = activityRes.rows.find((r) => r.details?.comment_id === commentId);
       expect(matchingActivity).toBeDefined();
       expect(matchingActivity.actor_id).toBe('usr_priya');
       expect(matchingActivity.details.content).toBe('Verifying atomic comment activity event');
@@ -567,10 +597,7 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       expect(run1.failed).toBeGreaterThanOrEqual(1);
 
       // Fast-forward next_run_at to simulate backoff elapsing
-      await pool.query(
-        'UPDATE outbox_events SET next_run_at = NOW() WHERE id = $1',
-        [failEventId]
-      );
+      await pool.query('UPDATE outbox_events SET next_run_at = NOW() WHERE id = $1', [failEventId]);
 
       // Attempt 2: fails, reaches max_attempts (2), marks status = 'failed'
       const run2 = await processOutboxBatch(10);
@@ -607,7 +634,9 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       expect(afterReclaim.rows[0].locked_at).toBeNull();
 
       // Fast-forward next_run_at to simulate backoff duration elapsing
-      await pool.query('UPDATE outbox_events SET next_run_at = NOW() WHERE id = $1', [staleEventId]);
+      await pool.query('UPDATE outbox_events SET next_run_at = NOW() WHERE id = $1', [
+        staleEventId,
+      ]);
 
       // Run batch again: job is now pending and due, so it executes and completes!
       const run2 = await processOutboxBatch(10);
@@ -620,6 +649,163 @@ describe('Workdesk - Work Items API & Workflow Integration Tests', () => {
       expect(completed.rows[0].status).toBe('completed');
       expect(completed.rows[0].attempts).toBe(2);
       expect(completed.rows[0].locked_at).toBeNull();
+    });
+
+    it('cleans up idempotency keys older than 24 hours while preserving recent keys', async () => {
+      const oldKey = `old_key_${crypto.randomUUID()}`;
+      const recentKey = `recent_key_${crypto.randomUUID()}`;
+
+      // Insert an expired idempotency key (created 25 hours ago)
+      await pool.query(
+        `INSERT INTO idempotency_keys (key, user_id, endpoint, request_hash, status_code, response_body, created_at)
+         VALUES ($1, 'usr_admin', '/api/items', 'hash1', 201, '{"status":"ok"}', NOW() - INTERVAL '25 hours');`,
+        [oldKey]
+      );
+
+      // Insert a fresh idempotency key (created just now)
+      await pool.query(
+        `INSERT INTO idempotency_keys (key, user_id, endpoint, request_hash, status_code, response_body, created_at)
+         VALUES ($1, 'usr_admin', '/api/items', 'hash2', 201, '{"status":"ok"}', NOW());`,
+        [recentKey]
+      );
+
+      // Execute worker cleanup for keys older than 24h
+      const deletedCount = await cleanupExpiredIdempotencyKeys(24);
+      expect(deletedCount).toBeGreaterThanOrEqual(1);
+
+      const checkOld = await pool.query('SELECT 1 FROM idempotency_keys WHERE key = $1', [oldKey]);
+      expect(checkOld.rowCount).toBe(0);
+
+      const checkRecent = await pool.query('SELECT 1 FROM idempotency_keys WHERE key = $1', [
+        recentKey,
+      ]);
+      expect(checkRecent.rowCount).toBe(1);
+    });
+  });
+
+  describe('Input Validation & Limit Capping', () => {
+    it('rejects createItem with missing/empty title with 400 VALIDATION_ERROR', async () => {
+      const res = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_billing',
+          title: '',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(res.body.fields).toContain('title');
+    });
+
+    it('rejects createItem with title longer than 200 characters', async () => {
+      const res = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_billing',
+          title: 'A'.repeat(201),
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(res.body.fields).toContain('title');
+    });
+
+    it('rejects createItem with description longer than 5000 characters', async () => {
+      const res = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_billing',
+          title: 'Valid title',
+          description: 'A'.repeat(5001),
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(res.body.fields).toContain('description');
+    });
+
+    it('rejects createItem with non-existent team_id', async () => {
+      const res = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_non_existent',
+          title: 'Valid title',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(res.body.fields).toContain('team_id');
+    });
+
+    it('rejects createItem with invalid priority or type enum', async () => {
+      const res = await request(app)
+        .post('/api/items')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .set('Idempotency-Key', crypto.randomUUID())
+        .send({
+          team_id: 'team_billing',
+          title: 'Valid title',
+          priority: 'super_urgent',
+          type: 'epic',
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(res.body.fields).toEqual(expect.arrayContaining(['priority', 'type']));
+    });
+
+    it('rejects addComment with comment longer than 2000 characters or empty', async () => {
+      const resEmpty = await request(app)
+        .post('/api/items/itm_000001/comments')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ content: '' });
+
+      expect(resEmpty.status).toBe(400);
+      expect(resEmpty.body.error).toBe('VALIDATION_ERROR');
+      expect(resEmpty.body.fields).toContain('content');
+
+      const resTooLong = await request(app)
+        .post('/api/items/itm_000001/comments')
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ content: 'C'.repeat(2001) });
+
+      expect(resTooLong.status).toBe(400);
+      expect(resTooLong.body.error).toBe('VALIDATION_ERROR');
+      expect(resTooLong.body.fields).toContain('content');
+    });
+
+    it('rejects malformed cursor format with 400 VALIDATION_ERROR', async () => {
+      const res = await request(app)
+        .get('/api/items?cursor=invalid_not_base64_json')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+      expect(res.body.fields).toContain('cursor');
+    });
+
+    it('caps list limit at 100 and defaults to 50', async () => {
+      const resDefault = await request(app)
+        .get('/api/items')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(resDefault.status).toBe(200);
+      expect(resDefault.body.items.length).toBeLessThanOrEqual(50);
+
+      const resCapped = await request(app)
+        .get('/api/items?limit=500')
+        .set('Authorization', `Bearer ${adminToken}`);
+
+      expect(resCapped.status).toBe(200);
+      expect(resCapped.body.items.length).toBeLessThanOrEqual(100);
     });
   });
 });
