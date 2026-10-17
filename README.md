@@ -27,7 +27,7 @@ cp .env.example .env && docker compose up --build
 ```
 
 On first startup:
-- The database schema is automatically migrated using plain SQL migrations (`001_initial_schema.sql`, `002_idempotency_keys.sql`).
+- The database schema is automatically migrated using plain SQL migrations (`001_initial_schema.sql`, `002_idempotency_keys.sql`, `003_outbox_locked_at.sql`).
 - The database is automatically seeded with 10 enterprise users, 3 teams, and 20,000 realistic work items (`SEED_ITEMS=20000`).
 
 ### 2. Stopping the Application
@@ -188,12 +188,13 @@ This section documents architectural trade-offs and known limitations present in
 2. **Timing Disparity on Unknown Emails:** Password verification returns immediately if an email is not found, creating a measurable timing delta compared to existing accounts where `bcrypt.compare` executes.
 3. **JWT in `localStorage`:** JWT tokens are stored in browser `localStorage` on the frontend, posing an XSS exposure risk compared to `httpOnly` secure cookies.
 4. **No JWT Refresh or Revocation:** Tokens are stateless HS256 with an 8-hour TTL. There is no refresh token mechanism, sliding session, or server-side token revocation list (blocklist).
-5. **Post-Response Idempotency Persistence:** The idempotency middleware updates `status_code` and `response_body` in an asynchronous callback after `res.json` sends data to the client. An ungraceful process crash in this narrow window would leave the key unfinalized.
+5. **Idempotency Record Outside Item Transaction:** The `idempotency_keys` reservation is managed by Express middleware outside the item creation transaction (`withTransaction`). The reservation is inserted before the item transaction begins, and `status_code` / `response_body` are written in an asynchronous hook after response transmission. An ungraceful process crash in that window would leave the key unfinalized.
 6. **Only 2xx Responses are Cached:** Idempotency keys only store successful responses (`200`-`299`). Non-2xx responses (e.g. 400 validation errors) delete the reservation to allow client correction and retry.
 7. **Idempotency Keys Never Expire:** The `idempotency_keys` table does not have an automatic TTL or background cleanup cron, meaning records accumulate over time.
-8. **Colocated Outbox Worker:** The background outbox worker runs as a `setInterval` loop in the same Node.js process as the HTTP API. Under heavy processing loads, this worker can contend for CPU cycles and database connections with user traffic.
+8. **Colocated Outbox Worker & Automatic Stale Job Recovery:** The background outbox worker runs as a polling loop in the same Node.js process as the HTTP API. Outbox recovery automatically detects and reclaims jobs stuck in `processing` for >60 seconds via `locked_at` leases (migration 003), preventing permanently orphaned background jobs.
 9. **Simulated Notification Delivery:** The outbox worker's notification handler logs dispatch events to `stdout` rather than delivering real emails, webhooks, or push notifications.
-10. **Polling Instead of Realtime:** The UI updates via polling intervals rather than WebSockets or Server-Sent Events (SSE), introducing a short latency before external updates appear.
-11. **Basic English Full-Text Search:** Text search utilizes PostgreSQL's basic `'english'` dictionary config without typo tolerance, n-grams, or fuzzy matching.
-12. **No Audit Logging for Read Access:** Read operations (`GET /api/items`) are not logged in `activity_events`; only mutating operations (create, update, claim, transition, comment) generate audit records.
-13. **Unpartitioned Activity Table:** The `activity_events` table is a single unpartitioned table that will require range or list partitioning under production enterprise write volumes.
+10. **10-Second Polling instead of Realtime:** The UI updates via a 10-second background polling interval (`refetchInterval: 10000` via TanStack Query) rather than WebSockets or Server-Sent Events (SSE), introducing a short latency before external updates appear.
+11. **Pessimistic UI (No Optimistic UI Updates):** The frontend avoids speculative optimistic cache updates and rollback complexity. Mutations wait for canonical server response before invalidating TanStack Query keys. Concurrency conflicts display an inline conflict banner with a manual "Reload" action.
+12. **Basic English Full-Text Search:** Text search utilizes PostgreSQL's basic `'english'` dictionary config without typo tolerance, n-grams, or fuzzy matching.
+13. **No Audit Logging for Read Access:** Read operations (`GET /api/items`) are not logged in `activity_events`; only mutating operations (create, update, claim, transition, comment) generate audit records.
+14. **Unpartitioned Activity Table:** The `activity_events` table is a single unpartitioned table that will require range or list partitioning under production enterprise write volumes.

@@ -19,13 +19,18 @@ We chose the **Hybrid Model**:
 - **Optimistic Locking:** Every work item has an integer `version` column. Standard attribute updates increment `version = version + 1` and require `expected_version` in the payload. If 0 rows are updated, the server rolls back and returns `409 OPTIMISTIC_LOCK_CONFLICT` alongside the fresh DB row so the client can resolve the conflict.
 - **Conditional-UPDATE Claim:** Claims execute `UPDATE work_items SET assignee_id = $1, status = 'in_progress', version = version + 1 WHERE id = $2 AND assignee_id IS NULL AND version = $3`. This guarantees that if two agents click claim simultaneously, exactly one succeeds and the other receives a `409` conflict.
 - **`SELECT FOR UPDATE` for Status Transitions:** The `transitionItem` endpoint moves the item read inside the transaction with `SELECT * FROM work_items WHERE id = $1 FOR UPDATE`. The allowed-transition map and role permission checks (`can(user, 'approve' | 'transition', item)`) are evaluated on that locked row. The version check is evaluated atomically in the same transaction.
+- **Pessimistic Frontend Mutations (No Optimistic UI):** The frontend deliberately avoids optimistic UI updates or speculative cache manipulation. Rather than optimistically updating the UI and handling rollback complexity upon concurrency conflicts or authorization failures, all mutations (claim, transition, update, comment) are pessimistic:
+  1. Buttons display loading states while the HTTP request is in-flight.
+  2. The UI waits for canonical server confirmation.
+  3. On success, TanStack Query keys are invalidated to refetch fresh server state.
+  4. On `409 OPTIMISTIC_LOCK_CONFLICT` or lifecycle violation, the UI renders a conflict alert banner with a manual "Reload" button.
 
 ### Trade-off
 Targeted row locking introduces a brief wait in PostgreSQL when two requests target the same item simultaneously. However, this eliminates race conditions and guarantees that status transitions adhere strictly to the allowed state graph and role permissions.
 
 ---
 
-## 2. Transactional Outbox Pattern and Atomic Activity Events
+## 2. Transactional Outbox Pattern, Atomic Activity Events, and Crash Recovery
 
 ### Context
 Every work item change requires an audit trail (`activity_events`) and asynchronous downstream effects (notifications, external dispatches, search indexing). Direct synchronous calls to external message brokers or notification services within the HTTP request cycle produce dual-write failure modes (e.g., database commits but notification fails, or notification succeeds but database transaction rolls back).
@@ -33,14 +38,15 @@ Every work item change requires an audit trail (`activity_events`) and asynchron
 ### Options Considered
 1. **Direct Notification Calls in Route Handlers:** Call notification logic immediately after the DB update.
 2. **PostgreSQL CDC (Change Data Capture) or LISTEN/NOTIFY:** Use Debezium or logical replication streams.
-3. **Transactional Outbox Table:** Write an `outbox_events` record inside the exact same database transaction (`withTransaction`) as the work item and activity event.
+3. **Transactional Outbox Table with Stale Lease Recovery:** Write an `outbox_events` record inside the exact same database transaction (`withTransaction`) as the work item and activity event, with locked lease tracking.
 
 ### Choice
-We chose the **Transactional Outbox Table**:
-- When an item is created, claimed, or transitioned, the item update, the `activity_events` audit row, and the `outbox_events` job are written in **ONE single database transaction**.
+We chose the **Transactional Outbox Table with Stale Lease Recovery**:
+- When an item is created, claimed, transitioned, updated, or commented on, the item/comment record, the `activity_events` audit row (`action='comment'`, `'created'`, etc.), and the `outbox_events` job are written in **ONE single database transaction**.
 - An asynchronous worker processes pending events in batches using `SELECT ... FOR UPDATE SKIP LOCKED` to allow multiple concurrent workers without contention.
+- **Outbox Recovery & Stale Lease Reclamation (Migration 003):** To prevent jobs from becoming permanently stranded if a worker node crashes mid-execution, migration `003_outbox_locked_at.sql` added `locked_at TIMESTAMPTZ` and index `idx_outbox_processing_locked`. When jobs move to `status = 'processing'`, `locked_at` is set to `NOW()`. At the start of each batch, `reclaimStaleJobs(60)` reclaims any jobs stranded in `processing` for more than 60 seconds, increments `attempts`, and either resets them to `pending` with exponential backoff or marks them as `failed` once `max_attempts` is reached.
 - Failed outbox jobs retry with exponential backoff and transition to `failed` upon reaching `max_attempts`.
-- Successfully processed jobs are marked `completed`, ensuring deduplication if the batch processor re-examines the table.
+- Successfully processed jobs are marked `completed`, resetting `locked_at = NULL`.
 
 ### Trade-off
 The outbox pattern guarantees **at-least-once delivery** rather than exactly-once delivery. Downstream consumers must handle idempotent processing. There is also a small latency between transaction commit and background worker execution (configured to 3 seconds by default).
@@ -81,17 +87,19 @@ Network retries, gateway timeouts, and rapid double-submissions can cause accide
 
 ### Choice
 We chose a **Persistent Postgres Table with `(user_id, key)` Constraint and Request Hash**:
-- **Atomic Reservation:** Incoming POST requests attempt `INSERT INTO idempotency_keys (key, user_id, request_hash) VALUES (...) ON CONFLICT (user_id, key) DO NOTHING RETURNING *`.
-- **Concurrency Safety:** If two requests arrive at the exact same millisecond with the same key, only one wins the atomic insert. The second request detects the existing key and awaits completion.
+- **Atomic Reservation Outside Item Transaction:** Incoming POST requests pass through Express middleware (`requireIdempotency`) which performs an atomic reservation: `INSERT INTO idempotency_keys (key, user_id, request_hash) VALUES (...) ON CONFLICT (user_id, key) DO NOTHING RETURNING *`. This reservation runs on its own database connection before the item creation controller begins.
+- **Item Creation Transaction:** The item creation controller (`createItem`) executes separately inside its own `withTransaction` block.
+- **Post-Response Finalization:** When the response is dispatched via `res.json()`, the middleware intercepts the call and asynchronously writes `status_code` and `response_body` to the reserved idempotency record.
+- **Concurrency Safety:** If two requests arrive at the exact same millisecond with the same key, only one wins the atomic insert. The second request detects the existing key and awaits completion via brief polling intervals (40ms).
 - **Payload Verification:** The request body is canonically serialized and hashed with SHA-256. If a client sends the same key with a different body, the server immediately returns `422 UNPROCESSABLE_ENTITY`.
 - **Replay:** The same key with the same body immediately returns the cached status code and response payload with header `X-Idempotent-Replay: true`.
 
 ### Trade-off
-Writing and querying `idempotency_keys` adds database operations to creation requests. In-flight requests poll briefly (40ms intervals) until the winner completes.
+Because the idempotency reservation is outside the item creation transaction, an ungraceful server crash occurring after item commit but before the post-response finalization will leave the idempotency key in an unfinalized state (`status_code IS NULL`).
 
 ---
 
-## 5. Keyset (Cursor) Pagination, Server-Side Filtering, and Polling over WebSockets
+## 5. Keyset (Cursor) Pagination, Server-Side Filtering, and 10-Second Polling
 
 ### Context
 Enterprise issue trackers scale to tens of thousands of work items. Client-side filtering or SQL offset pagination (`OFFSET 15000`) degrades severely on large tables, as PostgreSQL must scan and discard thousands of rows.
@@ -102,13 +110,13 @@ Enterprise issue trackers scale to tens of thousands of work items. Client-side 
 3. **Keyset Cursor Pagination with Composite Indexes and Polling:** Seek pagination based on indexed columns `(created_at, id)`.
 
 ### Choice
-We chose **Keyset Cursor Pagination with Composite Indexes**:
+We chose **Keyset Cursor Pagination with Composite Indexes and 10-Second Polling**:
 - Queries use `WHERE (created_at, id) < (cursor_created_at, cursor_id) ORDER BY created_at DESC, id DESC LIMIT $N`.
 - Supported by composite B-Tree indexes:
   - `idx_work_items_cursor (team_id, created_at DESC, id DESC)`
   - `idx_work_items_team_status_priority (team_id, status, priority)`
   - `idx_work_items_search_gin` for full-text search across title and description.
-- **Polling over WebSockets:** The frontend leverages TanStack Query with background polling rather than WebSockets. This eliminates stateful socket connections, firewall disconnects, reconnection cascades, and complex server clustering.
+- **10-Second Background Polling over WebSockets:** The frontend leverages TanStack Query with a 10-second polling interval (`refetchInterval: 10000`) for the infinite work items feed and active detail panel rather than stateful WebSockets. This eliminates stateful socket connections, firewall disconnects, reconnection cascades, and complex server clustering.
 
 ### Trade-off
 Keyset pagination cannot jump directly to an arbitrary page number (e.g. "jump to page 42"). It requires sequential forward/backward cursor traversal, which aligns with modern feed and list workflows.
