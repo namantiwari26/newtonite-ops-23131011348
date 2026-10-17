@@ -5,10 +5,7 @@ const API_BASE = '/api';
 /**
  * Helper to execute JSON HTTP requests with JWT Authorization header.
  */
-async function apiFetch<T>(
-  endpoint: string,
-  options: RequestInit = {}
-): Promise<T> {
+async function apiFetch<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
   const token = localStorage.getItem('workdesk_token');
   const headers = new Headers(options.headers || {});
   headers.set('Content-Type', 'application/json');
@@ -89,9 +86,7 @@ export interface ListItemsResponse {
   total_count: number;
 }
 
-export async function fetchItems(
-  params: ListItemsParams
-): Promise<ListItemsResponse> {
+export async function fetchItems(params: ListItemsParams): Promise<ListItemsResponse> {
   const query = new URLSearchParams();
   if (params.team_id) query.set('team_id', params.team_id);
   if (params.status) query.set('status', params.status);
@@ -113,32 +108,29 @@ export async function fetchItemDetail(
 }
 
 export async function createItem(
-  payload: { team_id: string; title: string; description: string; priority: string; due_date?: string },
+  payload: {
+    team_id: string;
+    title: string;
+    description: string;
+    priority: string;
+    due_date?: string;
+  },
   idempotencyKey: string
 ): Promise<{ item: WorkItem }> {
-  return apiFetch<{ item: WorkItem }>(
-    '/items',
-    {
-      method: 'POST',
-      headers: {
-        'Idempotency-Key': idempotencyKey,
-      },
-      body: JSON.stringify(payload),
-    }
-  );
+  return apiFetch<{ item: WorkItem }>('/items', {
+    method: 'POST',
+    headers: {
+      'Idempotency-Key': idempotencyKey,
+    },
+    body: JSON.stringify(payload),
+  });
 }
 
-export async function claimItem(
-  id: string,
-  expectedVersion: number
-): Promise<{ item: WorkItem }> {
-  return apiFetch<{ item: WorkItem }>(
-    `/items/${id}/claim`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ expected_version: expectedVersion }),
-    }
-  );
+export async function claimItem(id: string, version: number): Promise<{ item: WorkItem }> {
+  return apiFetch<{ item: WorkItem }>(`/items/${id}/claim`, {
+    method: 'POST',
+    body: JSON.stringify({ version }),
+  });
 }
 
 export async function updateItem(
@@ -150,16 +142,13 @@ export async function updateItem(
     status?: string;
     assignee_id?: string | null;
     due_date?: string | null;
-    expected_version: number;
+    version: number;
   }
 ): Promise<{ item: WorkItem }> {
-  return apiFetch<{ item: WorkItem }>(
-    `/items/${id}`,
-    {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-    }
-  );
+  return apiFetch<{ item: WorkItem }>(`/items/${id}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
 }
 
 export async function transitionItem(
@@ -167,32 +156,15 @@ export async function transitionItem(
   to: string,
   version: number
 ): Promise<{ item: WorkItem }> {
-  return apiFetch<{ item: WorkItem }>(
-    `/items/${id}/transition`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ to, version }),
-    }
-  );
+  return apiFetch<{ item: WorkItem }>(`/items/${id}/transition`, {
+    method: 'POST',
+    body: JSON.stringify({ to, version }),
+  });
 }
 
-export async function resolveItem(
-  id: string,
-  expectedVersion: number,
-  _resolutionNotes: string = 'Approved and resolved'
-): Promise<{ item: WorkItem }> {
-  return transitionItem(id, 'resolved', expectedVersion);
-}
-
-export async function addComment(
-  itemId: string,
-  content: string
-): Promise<{ comment: Comment }> {
-  return apiFetch<{ comment: Comment }>(
-    `/items/${itemId}/comments`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ content }),
-    }
-  );
+export async function addComment(itemId: string, content: string): Promise<{ comment: Comment }> {
+  return apiFetch<{ comment: Comment }>(`/items/${itemId}/comments`, {
+    method: 'POST',
+    body: JSON.stringify({ content }),
+  });
 }

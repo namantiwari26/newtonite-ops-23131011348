@@ -108,7 +108,9 @@ export function App() {
     // Map navigation views to server query parameters
     ...(currentView === 'my_work' && currentUser ? { assignee: currentUser.id } : {}),
     ...(currentView === 'needs_approval' ? { status: 'awaiting_approval' } : {}),
-    ...(currentView === 'unassigned_urgent' ? { assignee: 'unassigned', priority: 'critical' } : {}),
+    ...(currentView === 'unassigned_urgent'
+      ? { assignee: 'unassigned', priority: 'critical' }
+      : {}),
   };
 
   // Fetch Teams and Users
@@ -151,6 +153,7 @@ export function App() {
     hasNextPage,
     fetchNextPage,
     refetch: refetchItems,
+    error: itemsError,
   } = useInfiniteQuery({
     queryKey: ['items', effectiveFilters, currentUser?.id],
     initialPageParam: '',
@@ -177,6 +180,7 @@ export function App() {
   const {
     data: detailData,
     isLoading: isLoadingDetail,
+    error: detailError,
     refetch: refetchDetail,
   } = useQuery({
     queryKey: ['item-detail', selectedItemId],
@@ -191,6 +195,21 @@ export function App() {
   useEffect(() => {
     setConflictError(null);
   }, [selectedItemId]);
+
+  // Global Keyboard listener: Esc closes detail panel or modal
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (isNewItemModalOpen) {
+          setIsNewItemModalOpen(false);
+        } else if (selectedItemId) {
+          setSelectedItemId(null);
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isNewItemModalOpen, selectedItemId]);
 
   // Mutations
   const claimMutation = useMutation({
@@ -212,8 +231,6 @@ export function App() {
     },
   });
 
-
-
   const transitionMutation = useMutation({
     mutationFn: ({ item, to }: { item: WorkItem; to: string }) =>
       transitionItem(item.id, to, item.version),
@@ -223,7 +240,11 @@ export function App() {
       queryClient.invalidateQueries({ queryKey: ['item-detail', selectedItemId] });
     },
     onError: (err: any) => {
-      if (err.status === 409 || err.code === 'OPTIMISTIC_LOCK_CONFLICT' || err.code === 'INVALID_TRANSITION') {
+      if (
+        err.status === 409 ||
+        err.code === 'OPTIMISTIC_LOCK_CONFLICT' ||
+        err.code === 'INVALID_TRANSITION'
+      ) {
         setConflictError(err.message || 'This item was changed by someone else. Reload.');
       } else {
         setConflictError(err.message || 'Failed to transition item');
@@ -273,7 +294,7 @@ export function App() {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+    <div className="app-container">
       {/* Sidebar with Navigation and User Profile */}
       <Sidebar
         currentView={currentView}
@@ -287,7 +308,7 @@ export function App() {
       />
 
       {/* Main Workspace Layout */}
-      <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, height: '100%' }}>
+      <div className="main-layout">
         {/* Top Bar with Search and New item button */}
         <TopNav
           search={search}
@@ -315,7 +336,7 @@ export function App() {
         />
 
         {/* Table & Right Detail Panel Container */}
-        <div style={{ display: 'flex', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <div className="workspace-layout">
           {/* Dense Work Item Table */}
           <WorkItemTable
             items={allItems}
@@ -327,6 +348,8 @@ export function App() {
             isFetchingNextPage={isFetchingNextPage}
             onLoadMore={() => fetchNextPage()}
             totalCount={totalCount}
+            error={itemsError as Error | null}
+            onRetry={() => refetchItems()}
             onClearFilters={() => {
               setFilters({
                 status: '',
@@ -358,16 +381,13 @@ export function App() {
               onAddComment={async (itemId, content) => {
                 await addCommentMutation.mutateAsync({ itemId, content });
               }}
-              conflictError={conflictError}
+              conflictError={conflictError || (detailError ? (detailError as Error).message : null)}
               onReload={() => {
                 setConflictError(null);
                 refetchItems();
                 refetchDetail();
               }}
-              isActionPending={
-                claimMutation.isPending ||
-                transitionMutation.isPending
-              }
+              isActionPending={claimMutation.isPending || transitionMutation.isPending}
             />
           )}
         </div>

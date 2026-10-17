@@ -68,14 +68,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
   }
 
   return (
-    <div style={{
-      padding: '12px 20px',
-      borderBottom: '1px solid #E5E7EB',
-      background: '#FFFFFF',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 10,
-    }}>
+    <div className="filter-toolbar">
       {/* Dropdown controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <select
@@ -83,6 +76,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
           value={status}
           onChange={(e) => onFilterChange({ status: e.target.value })}
+          aria-label="Filter by status"
         >
           <option value="">Status: All</option>
           {WORK_ITEM_STATUSES.map((s) => (
@@ -97,6 +91,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
           value={priority}
           onChange={(e) => onFilterChange({ priority: e.target.value })}
+          aria-label="Filter by priority"
         >
           <option value="">Priority: All</option>
           <option value="critical">Critical</option>
@@ -110,6 +105,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
           value={teamId}
           onChange={(e) => onFilterChange({ team_id: e.target.value })}
+          aria-label="Filter by team"
         >
           <option value="">Team: All</option>
           {teams.map((t) => (
@@ -124,6 +120,7 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
           style={{ width: 'auto', height: 30, fontSize: 12, padding: '2px 8px' }}
           value={assignee}
           onChange={(e) => onFilterChange({ assignee: e.target.value })}
+          aria-label="Filter by assignee"
         >
           <option value="">Assignee: All</option>
           <option value="unassigned">Unassigned</option>
@@ -136,9 +133,11 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
 
         {activeChips.length > 0 && (
           <button
+            type="button"
             onClick={onClearAll}
             className="btn btn-ghost"
             style={{ fontSize: 12, padding: '4px 8px', height: 30 }}
+            aria-label="Clear all active filters"
           >
             Clear filters
           </button>
@@ -155,7 +154,8 @@ export const FilterToolbar: React.FC<FilterToolbarProps> = ({
                 type="button"
                 onClick={chip.onRemove}
                 className="filter-chip-remove"
-                title="Remove filter"
+                title={`Remove filter: ${chip.label}`}
+                aria-label={`Remove filter: ${chip.label}`}
               >
                 <X size={13} />
               </button>

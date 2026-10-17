@@ -7,27 +7,17 @@ interface TopNavProps {
   onOpenNewItem: () => void;
 }
 
-export const TopNav: React.FC<TopNavProps> = ({
-  search,
-  onSearchChange,
-  onOpenNewItem,
-}) => {
+export const TopNav: React.FC<TopNavProps> = ({ search, onSearchChange, onOpenNewItem }) => {
   return (
-    <header style={{
-      height: 52,
-      background: '#FFFFFF',
-      borderBottom: '1px solid #E5E7EB',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'space-between',
-      padding: '0 20px',
-      position: 'sticky',
-      top: 0,
-      zIndex: 50,
-    }}>
+    <header className="top-nav">
       {/* Search Input */}
       <div style={{ position: 'relative', width: 340 }}>
-        <Search size={15} color="#9CA3AF" style={{ position: 'absolute', left: 10, top: 9 }} />
+        <Search
+          size={15}
+          color="#9CA3AF"
+          style={{ position: 'absolute', left: 10, top: 9 }}
+          aria-hidden="true"
+        />
         <input
           type="text"
           className="input"
@@ -35,17 +25,21 @@ export const TopNav: React.FC<TopNavProps> = ({
           placeholder="Search work items by title or description..."
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
+          aria-label="Search work items by title or description"
         />
       </div>
 
       {/* Action Controls */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <button
+          type="button"
           onClick={onOpenNewItem}
           className="btn btn-primary"
           style={{ height: 32, padding: '0 12px' }}
+          aria-label="Create new work item"
+          title="Create new work item"
         >
-          <Plus size={15} />
+          <Plus size={15} aria-hidden="true" />
           <span>New item</span>
         </button>
       </div>

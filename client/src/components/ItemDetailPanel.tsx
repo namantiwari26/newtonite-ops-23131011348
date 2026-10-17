@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { WorkItem, ActivityEvent, Comment, Team, User } from '../types.js';
+import { formatRelativeTime, formatExactTime, formatDate } from '../dateUtils.js';
 import { X, Check, XCircle, AlertTriangle, Send } from 'lucide-react';
 
 interface ItemDetailPanelProps {
-  item: WorkItem;
+  item: WorkItem | null;
   teams: Team[];
   users: User[];
   currentUser: User;
@@ -41,7 +42,7 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
   currentUser,
   activityEvents,
   comments,
-  isLoadingDetail: _isLoadingDetail,
+  isLoadingDetail,
   onClose,
   onClaim,
   onTransition,
@@ -52,6 +53,7 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
 }) => {
   const [newComment, setNewComment] = useState('');
   const [isPostingComment, setIsPostingComment] = useState(false);
+  const [commentError, setCommentError] = useState<string | null>(null);
 
   // User name lookup helper
   const getUserName = (userId?: string | null) => {
@@ -65,20 +67,83 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
     return TRANSITION_LABELS[s] || s.replace(/_/g, ' ');
   };
 
-  const formatDueDate = (d?: string | null) => {
-    if (!d) return 'none';
-    try {
-      return new Date(d).toLocaleDateString();
-    } catch {
-      return String(d);
-    }
-  };
+  // If loading and no item data yet, render detail skeleton
+  if (isLoadingDetail && !item) {
+    return (
+      <div className="detail-panel" role="region" aria-label="Loading item details">
+        <div className="detail-panel-header">
+          <div className="skeleton" style={{ width: 120, height: 16 }} />
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn btn-ghost"
+            style={{ padding: 4 }}
+            title="Close panel"
+            aria-label="Close detail panel"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="detail-panel-body">
+          <div style={{ display: 'flex', gap: 8 }}>
+            <div className="skeleton" style={{ width: 70, height: 30 }} />
+            <div className="skeleton" style={{ width: 100, height: 30 }} />
+          </div>
+          <div className="skeleton" style={{ width: '85%', height: 22 }} />
+          <div className="skeleton" style={{ width: '100%', height: 60 }} />
+          <div
+            style={{
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 12,
+              padding: '16px 0',
+              borderTop: '1px solid #E5E7EB',
+              borderBottom: '1px solid #E5E7EB',
+            }}
+          >
+            <div className="skeleton" style={{ width: '60%', height: 14 }} />
+            <div className="skeleton" style={{ width: '50%', height: 14 }} />
+            <div className="skeleton" style={{ width: '70%', height: 14 }} />
+            <div className="skeleton" style={{ width: '40%', height: 14 }} />
+          </div>
+          <div className="skeleton" style={{ width: '50%', height: 18 }} />
+          <div className="skeleton" style={{ width: '100%', height: 70 }} />
+        </div>
+      </div>
+    );
+  }
+
+  // If no item selected, render empty state
+  if (!item) {
+    return (
+      <div className="detail-panel" role="region" aria-label="Item details">
+        <div className="detail-panel-header">
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#6B7280' }}>Details</span>
+          <button
+            type="button"
+            onClick={onClose}
+            className="btn btn-ghost"
+            style={{ padding: 4 }}
+            title="Close panel"
+            aria-label="Close detail panel"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="empty-state">
+          <div className="empty-state-title">No work item selected</div>
+          <div className="empty-state-desc">Select an item from the list to view its details.</div>
+        </div>
+      </div>
+    );
+  }
 
   // Check user permissions in item team
   const userTeamMembership = currentUser.memberships?.find((m) => m.team_id === item.team_id);
   const isTeamMemberOrLead = currentUser.is_admin || !!userTeamMembership;
   const isLeadOrAdmin = currentUser.is_admin || userTeamMembership?.role === 'lead';
-  const isViewer = !currentUser.is_admin && (!userTeamMembership || userTeamMembership.role === 'viewer');
+  const isViewer =
+    !currentUser.is_admin && (!userTeamMembership || userTeamMembership.role === 'viewer');
 
   const canClaim = isTeamMemberOrLead && !isViewer && !item.assignee_id;
   const canModify = isTeamMemberOrLead && !isViewer;
@@ -89,10 +154,13 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
     e.preventDefault();
     if (!newComment.trim()) return;
 
+    setCommentError(null);
     setIsPostingComment(true);
     try {
       await onAddComment(item.id, newComment.trim());
       setNewComment('');
+    } catch (err: any) {
+      setCommentError(err.message || 'Failed to post comment. Please try again.');
     } finally {
       setIsPostingComment(false);
     }
@@ -146,10 +214,14 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
         sentences.push(`priority changed from ${changes.priority.from} to ${changes.priority.to}`);
       }
       if (changes.status) {
-        sentences.push(`status changed from ${formatStatus(changes.status.from)} to ${formatStatus(changes.status.to)}`);
+        sentences.push(
+          `status changed from ${formatStatus(changes.status.from)} to ${formatStatus(changes.status.to)}`
+        );
       }
       if (changes.due_date) {
-        sentences.push(`due date changed from ${formatDueDate(changes.due_date.from)} to ${formatDueDate(changes.due_date.to)}`);
+        sentences.push(
+          `due date changed from ${formatDate(changes.due_date.from)} to ${formatDate(changes.due_date.to)}`
+        );
       }
       if (changes.assignee_id) {
         const fromName = getUserName(changes.assignee_id.from) || 'unassigned';
@@ -191,82 +263,46 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
   }
 
   // Sort chronological (oldest to newest)
-  timelineItems.sort(
-    (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-  );
+  timelineItems.sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
 
   return (
-    <div
-      style={{
-        position: 'fixed',
-        top: 0,
-        right: 0,
-        bottom: 0,
-        width: '480px',
-        maxWidth: '100vw',
-        background: '#FFFFFF',
-        boxShadow: '-4px 0 20px rgba(0, 0, 0, 0.08)',
-        borderLeft: '1px solid #E5E7EB',
-        zIndex: 50,
-        display: 'flex',
-        flexDirection: 'column',
-        overflowY: 'auto',
-      }}
-    >
+    <div className="detail-panel" role="region" aria-label={`Details for ${item.title}`}>
       {/* Header */}
-      <div
-        style={{
-          padding: '14px 20px',
-          borderBottom: '1px solid #E5E7EB',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          position: 'sticky',
-          top: 0,
-          background: '#FFFFFF',
-          zIndex: 10,
-        }}
-      >
+      <div className="detail-panel-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 13, fontWeight: 600, color: '#6B7280' }}>
-            {item.id}
-          </span>
+          <span style={{ fontSize: 13, fontWeight: 600, color: '#6B7280' }}>{item.id}</span>
           <span style={{ fontSize: 12, color: '#9CA3AF' }}>·</span>
-          <span style={{ fontSize: 12, color: '#4B5563' }}>
-            Version {item.version}
-          </span>
+          <span style={{ fontSize: 12, color: '#4B5563' }}>Version {item.version}</span>
         </div>
 
         <button
+          type="button"
           onClick={onClose}
           className="btn btn-ghost"
           style={{ padding: 4 }}
           title="Close panel"
+          aria-label="Close detail panel"
         >
           <X size={16} />
         </button>
       </div>
 
-      <div style={{ padding: '20px', display: 'flex', flexDirection: 'column', gap: 20 }}>
-        {/* Task 5: 409 Conflict / Error Banner with Reload button */}
+      <div className="detail-panel-body">
+        {/* Error Banner with Reload button */}
         {conflictError && (
-          <div
-            style={{
-              background: '#FEF2F2',
-              border: '1px solid #F87171',
-              borderRadius: 6,
-              padding: '10px 14px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: 12,
-            }}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#B91C1C', fontSize: 13, fontWeight: 500 }}>
+          <div className="error-banner" role="alert">
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 8,
+              }}
+            >
               <AlertTriangle size={16} />
               <span>{conflictError}</span>
             </div>
             <button
+              type="button"
               onClick={onReload}
               className="btn btn-secondary"
               style={{
@@ -279,6 +315,7 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
                 color: '#B91C1C',
                 cursor: 'pointer',
               }}
+              aria-label="Reload item details"
             >
               Reload
             </button>
@@ -288,36 +325,72 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
         {/* Action Controls & Allowed Status Transitions */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {/* Claim Button */}
-          {canClaim && (
-            <button
-              onClick={() => onClaim(item)}
-              disabled={isActionPending}
-              className="btn btn-primary"
-              style={{ fontSize: 12, height: 30 }}
-            >
-              Claim
-            </button>
-          )}
+          {!item.assignee_id &&
+            (canClaim ? (
+              <button
+                type="button"
+                onClick={() => onClaim(item)}
+                disabled={isActionPending}
+                className="btn btn-primary"
+                style={{ fontSize: 12, height: 30 }}
+                title={isActionPending ? 'Claiming item...' : 'Claim this work item'}
+                aria-label="Claim this work item"
+              >
+                Claim
+              </button>
+            ) : isViewer ? (
+              <button
+                type="button"
+                disabled
+                className="btn btn-primary"
+                style={{ fontSize: 12, height: 30 }}
+                title="Viewers cannot claim work items"
+                aria-label="Claim (disabled: Viewers cannot claim work items)"
+              >
+                Claim
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="btn btn-primary"
+                style={{ fontSize: 12, height: 30 }}
+                title="Only team members can claim work items"
+                aria-label="Claim (disabled: Only team members can claim work items)"
+              >
+                Claim
+              </button>
+            ))}
 
-          {/* Task 5: Status menu showing only allowed next states */}
+          {/* Status buttons: Lead Approval & Rejection */}
           {item.status === 'awaiting_approval' && isLeadOrAdmin && (
             <>
               <button
+                type="button"
                 onClick={() => onTransition(item, 'resolved')}
                 disabled={isActionPending}
                 className="btn btn-primary"
-                style={{ fontSize: 12, height: 30, background: '#059669', borderColor: '#059669', color: '#FFFFFF' }}
-                title="Lead Approval"
+                style={{
+                  fontSize: 12,
+                  height: 30,
+                  background: '#059669',
+                  borderColor: '#059669',
+                  color: '#FFFFFF',
+                }}
+                title={isActionPending ? 'Updating...' : 'Approve and mark resolved'}
+                aria-label="Approve work item"
               >
                 <Check size={14} />
                 <span>Approve</span>
               </button>
               <button
+                type="button"
                 onClick={() => onTransition(item, 'in_progress')}
                 disabled={isActionPending}
                 className="btn btn-secondary"
                 style={{ fontSize: 12, height: 30, color: '#DC2626', borderColor: '#FCA5A5' }}
-                title="Lead Rejection (return to in progress)"
+                title={isActionPending ? 'Updating...' : 'Reject and return to in progress'}
+                aria-label="Reject work item"
               >
                 <XCircle size={14} />
                 <span>Reject</span>
@@ -326,18 +399,57 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
           )}
 
           {item.status === 'awaiting_approval' && !isLeadOrAdmin && (
-            <span
-              style={{
-                fontSize: 12,
-                padding: '4px 10px',
-                background: '#FEF3C7',
-                color: '#92400E',
-                borderRadius: 4,
-                fontWeight: 500,
-              }}
-            >
-              Awaiting Lead Approval
-            </span>
+            <>
+              <button
+                type="button"
+                disabled
+                className="btn btn-primary"
+                style={{
+                  fontSize: 12,
+                  height: 30,
+                  background: '#059669',
+                  borderColor: '#059669',
+                  color: '#FFFFFF',
+                  opacity: 0.5,
+                  cursor: 'not-allowed',
+                }}
+                title="Only team leads can approve"
+                aria-label="Approve (disabled: Only team leads can approve)"
+              >
+                <Check size={14} />
+                <span>Approve</span>
+              </button>
+              <button
+                type="button"
+                disabled
+                className="btn btn-secondary"
+                style={{
+                  fontSize: 12,
+                  height: 30,
+                  color: '#DC2626',
+                  borderColor: '#FCA5A5',
+                  opacity: 0.5,
+                  cursor: 'not-allowed',
+                }}
+                title="Only team leads can reject"
+                aria-label="Reject (disabled: Only team leads can reject)"
+              >
+                <XCircle size={14} />
+                <span>Reject</span>
+              </button>
+              <span
+                style={{
+                  fontSize: 12,
+                  padding: '4px 10px',
+                  background: '#FEF3C7',
+                  color: '#92400E',
+                  borderRadius: 4,
+                  fontWeight: 500,
+                }}
+              >
+                Awaiting Lead Approval
+              </span>
+            </>
           )}
 
           {/* Status dropdown menu showing only allowed next states */}
@@ -352,19 +464,45 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
                   onTransition(item, e.target.value);
                 }
               }}
+              title={isActionPending ? 'Updating status...' : 'Select next status'}
+              aria-label="Select next status transition"
             >
-              <option value="" disabled>Next status...</option>
+              <option value="" disabled>
+                Next status...
+              </option>
               {allowedNext.map((toState) => (
                 <option key={toState} value={toState}>
                   {item.status === 'awaiting_approval' && toState === 'resolved'
                     ? 'Approve (Resolved)'
                     : item.status === 'awaiting_approval' && toState === 'in_progress'
-                    ? 'Reject (In Progress)'
-                    : item.status === 'resolved' && toState === 'in_progress'
-                    ? 'Reopen (In Progress)'
-                    : TRANSITION_LABELS[toState] || toState}
+                      ? 'Reject (In Progress)'
+                      : item.status === 'resolved' && toState === 'in_progress'
+                        ? 'Reopen (In Progress)'
+                        : TRANSITION_LABELS[toState] || toState}
                 </option>
               ))}
+            </select>
+          )}
+
+          {isViewer && item.status !== 'awaiting_approval' && item.status !== 'closed' && (
+            <select
+              className="select"
+              disabled
+              style={{
+                width: 'auto',
+                height: 30,
+                fontSize: 12,
+                padding: '2px 8px',
+                opacity: 0.5,
+                cursor: 'not-allowed',
+              }}
+              title="Viewers cannot change work item status"
+              aria-label="Select next status (disabled: Viewers cannot change work item status)"
+              value=""
+            >
+              <option value="" disabled>
+                Next status...
+              </option>
             </select>
           )}
 
@@ -378,6 +516,7 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
                 borderRadius: 4,
                 fontWeight: 500,
               }}
+              title="Closed work items cannot be transitioned"
             >
               Closed
             </span>
@@ -402,7 +541,13 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
         </div>
 
         {/* Metadata Details */}
-        <div style={{ borderTop: '1px solid #E5E7EB', borderBottom: '1px solid #E5E7EB', padding: '16px 0' }}>
+        <div
+          style={{
+            borderTop: '1px solid #E5E7EB',
+            borderBottom: '1px solid #E5E7EB',
+            padding: '16px 0',
+          }}
+        >
           <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: 12, fontSize: 13 }}>
             <div style={{ color: '#6B7280' }}>Status</div>
             <div>
@@ -413,9 +558,7 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
 
             <div style={{ color: '#6B7280' }}>Priority</div>
             <div>
-              <span className={`badge badge-priority-${item.priority}`}>
-                {item.priority}
-              </span>
+              <span className={`badge badge-priority-${item.priority}`}>{item.priority}</span>
             </div>
 
             <div style={{ color: '#6B7280' }}>Team</div>
@@ -431,9 +574,25 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
             <div style={{ color: '#6B7280' }}>Created By</div>
             <div style={{ color: '#111827' }}>{item.creator_name || item.created_by}</div>
 
+            <div style={{ color: '#6B7280' }}>Created</div>
+            <div style={{ color: '#111827' }}>
+              <span title={formatExactTime(item.created_at)}>
+                {formatRelativeTime(item.created_at)}
+              </span>
+            </div>
+
+            <div style={{ color: '#6B7280' }}>Updated</div>
+            <div style={{ color: '#111827' }}>
+              <span title={formatExactTime(item.updated_at)}>
+                {formatRelativeTime(item.updated_at)}
+              </span>
+            </div>
+
             <div style={{ color: '#6B7280' }}>Due Date</div>
             <div style={{ color: '#111827' }}>
-              {item.due_date ? new Date(item.due_date).toLocaleDateString() : 'None'}
+              <span title={formatExactTime(item.due_date)}>
+                {item.due_date ? formatDate(item.due_date) : 'None'}
+              </span>
             </div>
           </div>
         </div>
@@ -445,8 +604,12 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
           </div>
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginBottom: 16 }}>
+            {/* Comments Empty State */}
             {timelineItems.length === 0 ? (
-              <div style={{ fontSize: 12, color: '#9CA3AF' }}>No activity or comments recorded yet.</div>
+              <div className="empty-state" style={{ padding: '24px 12px' }}>
+                <div className="empty-state-title">No comments or activity yet</div>
+                <div className="empty-state-desc">Leave a comment below to start a discussion.</div>
+              </div>
             ) : (
               timelineItems.map((entry) => (
                 <div
@@ -460,24 +623,34 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
                     border: '1px solid #E5E7EB',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
-                      <span style={{ fontWeight: 600, color: '#111827' }}>
-                        {entry.actorName}
-                      </span>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'baseline',
+                      marginBottom: 4,
+                    }}
+                  >
+                    <div
+                      style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}
+                    >
+                      <span style={{ fontWeight: 600, color: '#111827' }}>{entry.actorName}</span>
                       {entry.sentences.map((sentence, idx) => (
                         <span key={idx} style={{ color: '#4B5563' }}>
                           {sentence}
                         </span>
                       ))}
                     </div>
-                    <span style={{ color: '#9CA3AF', fontSize: 11, whiteSpace: 'nowrap', marginLeft: 8 }}>
-                      {new Date(entry.createdAt).toLocaleDateString([], {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                      })}
+                    <span
+                      title={formatExactTime(entry.createdAt)}
+                      style={{
+                        color: '#9CA3AF',
+                        fontSize: 11,
+                        whiteSpace: 'nowrap',
+                        marginLeft: 8,
+                      }}
+                    >
+                      {formatRelativeTime(entry.createdAt)}
                     </span>
                   </div>
 
@@ -501,7 +674,31 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
                 </div>
               ))
             )}
+
+            {/* Posting Comment Skeleton */}
+            {isPostingComment && (
+              <div className="skeleton" style={{ height: 48, borderRadius: 6 }} />
+            )}
           </div>
+
+          {/* Comment Error Banner */}
+          {commentError && (
+            <div className="error-banner" role="alert" style={{ marginBottom: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <AlertTriangle size={14} />
+                <span>{commentError}</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCommentError(null)}
+                className="btn btn-ghost"
+                style={{ padding: 2 }}
+                aria-label="Dismiss comment error"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
 
           {/* Add Comment Input */}
           <form onSubmit={handleCommentSubmit} style={{ display: 'flex', gap: 8 }}>
@@ -511,14 +708,32 @@ export const ItemDetailPanel: React.FC<ItemDetailPanelProps> = ({
               style={{ fontSize: 13 }}
               placeholder="Add a comment..."
               value={newComment}
-              onChange={(e) => setNewComment(e.target.value)}
+              onChange={(e) => {
+                setNewComment(e.target.value);
+                if (commentError) setCommentError(null);
+              }}
               disabled={isPostingComment}
+              aria-label="Add a comment"
             />
             <button
               type="submit"
               className="btn btn-primary"
               disabled={!newComment.trim() || isPostingComment}
               style={{ padding: '0 12px' }}
+              title={
+                !newComment.trim()
+                  ? 'Enter a comment to submit'
+                  : isPostingComment
+                    ? 'Posting comment...'
+                    : 'Submit comment'
+              }
+              aria-label={
+                !newComment.trim()
+                  ? 'Submit comment (disabled: Enter a comment to submit)'
+                  : isPostingComment
+                    ? 'Posting comment...'
+                    : 'Submit comment'
+              }
             >
               <Send size={14} />
             </button>

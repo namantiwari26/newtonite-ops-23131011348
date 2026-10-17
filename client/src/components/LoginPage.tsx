@@ -52,15 +52,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
     const form = e.currentTarget;
     const formData = new FormData(form);
 
-    const formEmail =
-      (formData.get('email') as string) ||
-      emailInputRef.current?.value ||
-      email;
+    const formEmail = (formData.get('email') as string) || emailInputRef.current?.value || email;
 
     const formPassword =
-      (formData.get('password') as string) ||
-      passwordInputRef.current?.value ||
-      password;
+      (formData.get('password') as string) || passwordInputRef.current?.value || password;
 
     const emailToSubmit = (formEmail || '').trim();
     const passwordToSubmit = formPassword || '';
@@ -102,58 +97,64 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
   };
 
   return (
-    <div style={{
-      minHeight: '100vh',
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      backgroundColor: '#F6F7F9',
-      padding: 16,
-    }}>
-      <div style={{
-        background: '#FFFFFF',
-        border: '1px solid #E5E7EB',
-        borderRadius: 6,
-        padding: 32,
-        width: '100%',
-        maxWidth: 420,
-        boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)',
-      }}>
+    <div
+      style={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#F6F7F9',
+        padding: 16,
+      }}
+    >
+      <div
+        style={{
+          background: '#FFFFFF',
+          border: '1px solid #E5E7EB',
+          borderRadius: 6,
+          padding: 32,
+          width: '100%',
+          maxWidth: 420,
+          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.05)',
+        }}
+      >
         {/* Brand */}
         <div style={{ marginBottom: 24, textAlign: 'center' }}>
-          <div style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            width: 36,
-            height: 36,
-            borderRadius: 6,
-            background: '#2563EB',
-            color: '#FFFFFF',
-            fontWeight: 700,
-            fontSize: 18,
-            marginBottom: 12,
-          }}>
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 36,
+              height: 36,
+              borderRadius: 6,
+              background: '#2563EB',
+              color: '#FFFFFF',
+              fontWeight: 700,
+              fontSize: 18,
+              marginBottom: 12,
+            }}
+          >
             W
           </div>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1F2937' }}>
-            Workdesk
-          </h1>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: '#1F2937' }}>Workdesk</h1>
           <p style={{ fontSize: 13, color: '#6B7280', marginTop: 4 }}>
             Sign in to access your team's work items
           </p>
         </div>
 
         {error && (
-          <div style={{
-            background: '#FEF2F2',
-            border: '1px solid #FCA5A5',
-            color: '#991B1B',
-            borderRadius: 4,
-            padding: '8px 12px',
-            fontSize: 13,
-            marginBottom: 16,
-          }}>
+          <div
+            style={{
+              background: '#FEF2F2',
+              border: '1px solid #FCA5A5',
+              color: '#991B1B',
+              borderRadius: 4,
+              padding: '8px 12px',
+              fontSize: 13,
+              marginBottom: 16,
+            }}
+          >
             {error}
           </div>
         )}
@@ -163,7 +164,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           <div style={{ marginBottom: 16 }}>
             <label
               htmlFor="email"
-              style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}
+              style={{
+                display: 'block',
+                fontSize: 13,
+                fontWeight: 500,
+                color: '#374151',
+                marginBottom: 6,
+              }}
             >
               Work Email
             </label>
@@ -184,7 +191,13 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
           <div style={{ marginBottom: 20 }}>
             <label
               htmlFor="password"
-              style={{ display: 'block', fontSize: 13, fontWeight: 500, color: '#374151', marginBottom: 6 }}
+              style={{
+                display: 'block',
+                fontSize: 13,
+                fontWeight: 500,
+                color: '#374151',
+                marginBottom: 6,
+              }}
             >
               Password
             </label>
@@ -207,6 +220,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
             disabled={isLoading}
             className="btn btn-primary"
             style={{ width: '100%', padding: '8px 16px', fontSize: 14 }}
+            title={isLoading ? 'Signing in...' : 'Sign in to Workdesk'}
+            aria-label={isLoading ? 'Signing in...' : 'Sign in to Workdesk'}
           >
             {isLoading ? 'Signing in...' : 'Sign in'}
           </button>
@@ -214,12 +229,27 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
 
         {/* Demo credentials switcher for testing */}
         <div style={{ marginTop: 24, paddingTop: 16, borderTop: '1px solid #E5E7EB' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: '#6B7280' }}>
-              Quick sign-in as:
-            </div>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              marginBottom: 8,
+            }}
+          >
+            <div style={{ fontSize: 12, fontWeight: 500, color: '#6B7280' }}>Quick sign-in as:</div>
             <div style={{ fontSize: 11, color: '#9CA3AF' }}>
-              Demo password: <code style={{ color: '#4B5563', background: '#F3F4F6', padding: '1px 4px', borderRadius: 3 }}>Demo@12345</code>
+              Demo password:{' '}
+              <code
+                style={{
+                  color: '#4B5563',
+                  background: '#F3F4F6',
+                  padding: '1px 4px',
+                  borderRadius: 3,
+                }}
+              >
+                Demo@12345
+              </code>
             </div>
           </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -228,6 +258,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                 key={acc.email}
                 type="button"
                 onClick={() => handleQuickLogin(acc.email)}
+                title={`Sign in as ${acc.name} (${acc.role})`}
+                aria-label={`Sign in as ${acc.name}, ${acc.role}`}
                 style={{
                   background: '#F9FAFB',
                   border: '1px solid #E5E7EB',
@@ -239,7 +271,8 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLoginSuccess }) => {
                   color: '#374151',
                 }}
               >
-                <strong>{acc.name}</strong> ({acc.role}) · <span style={{ color: '#6B7280' }}>{acc.email}</span>
+                <strong>{acc.name}</strong> ({acc.role}) ·{' '}
+                <span style={{ color: '#6B7280' }}>{acc.email}</span>
               </button>
             ))}
           </div>

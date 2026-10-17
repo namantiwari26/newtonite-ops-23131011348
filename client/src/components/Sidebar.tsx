@@ -71,65 +71,66 @@ export const Sidebar: React.FC<SidebarProps> = ({
   ];
 
   return (
-    <aside style={{
-      width: 240,
-      background: '#F6F7F9',
-      borderRight: '1px solid #E5E7EB',
-      display: 'flex',
-      flexDirection: 'column',
-      justifyContent: 'space-between',
-      height: '100vh',
-      flexShrink: 0,
-      userSelect: 'none',
-    }}>
+    <aside className="sidebar">
       {/* Brand & Nav */}
       <div>
         {/* App Title */}
-        <div style={{
-          padding: '16px 18px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 10,
-          borderBottom: '1px solid #E5E7EB',
-        }}>
-          <div style={{
-            width: 24,
-            height: 24,
-            borderRadius: 4,
-            background: '#2563EB',
-            color: '#FFFFFF',
-            fontWeight: 700,
-            fontSize: 13,
+        <div
+          style={{
+            padding: '16px 18px',
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'center',
-          }}>
+            gap: 10,
+            borderBottom: '1px solid #E5E7EB',
+          }}
+        >
+          <div
+            style={{
+              width: 24,
+              height: 24,
+              borderRadius: 4,
+              background: '#2563EB',
+              color: '#FFFFFF',
+              fontWeight: 700,
+              fontSize: 13,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
             W
           </div>
-          <span style={{ fontSize: 15, fontWeight: 700, color: '#1F2937' }}>
-            Workdesk
-          </span>
+          <span style={{ fontSize: 15, fontWeight: 700, color: '#1F2937' }}>Workdesk</span>
         </div>
 
         {/* Navigation List */}
         <div style={{ padding: '12px 8px' }}>
-          <div style={{
-            fontSize: 11,
-            fontWeight: 600,
-            color: '#9CA3AF',
-            padding: '4px 10px',
-            marginBottom: 4,
-          }}>
+          <div
+            style={{
+              fontSize: 11,
+              fontWeight: 600,
+              color: '#9CA3AF',
+              padding: '4px 10px',
+              marginBottom: 4,
+            }}
+          >
             VIEWS
           </div>
 
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div
+            style={{ display: 'flex', flexDirection: 'column', gap: 2 }}
+            role="navigation"
+            aria-label="Views"
+          >
             {navItems.map((item) => {
               const isActive = currentView === item.id;
               return (
                 <button
                   key={item.id}
+                  type="button"
                   onClick={() => onSelectView(item.id)}
+                  aria-label={item.label}
+                  aria-current={isActive ? 'page' : undefined}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -153,9 +154,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     if (!isActive) e.currentTarget.style.backgroundColor = 'transparent';
                   }}
                 >
-                  <span style={{ color: isActive ? '#2563EB' : '#6B7280' }}>
-                    {item.icon}
-                  </span>
+                  <span style={{ color: isActive ? '#2563EB' : '#6B7280' }}>{item.icon}</span>
                   <span>{item.label}</span>
                 </button>
               );
@@ -165,27 +164,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
       </div>
 
       {/* User Menu at Bottom */}
-      <div style={{
-        padding: '12px 14px',
-        borderTop: '1px solid #E5E7EB',
-        background: '#FFFFFF',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-      }}>
+      <div
+        style={{
+          padding: '12px 14px',
+          borderTop: '1px solid #E5E7EB',
+          background: '#FFFFFF',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, overflow: 'hidden' }}>
-          <div className="avatar">
-            {getInitials(currentUser.name)}
-          </div>
+          <div className="avatar">{getInitials(currentUser.name)}</div>
           <div style={{ overflow: 'hidden' }}>
-            <div style={{
-              fontSize: 13,
-              fontWeight: 600,
-              color: '#1F2937',
-              whiteSpace: 'nowrap',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-            }}>
+            <div
+              style={{
+                fontSize: 13,
+                fontWeight: 600,
+                color: '#1F2937',
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              }}
+            >
               {currentUser.name}
             </div>
             <div
@@ -204,10 +205,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
 
         <button
+          type="button"
           onClick={onLogout}
           className="btn btn-ghost"
           style={{ padding: '6px', color: '#6B7280' }}
           title="Log out"
+          aria-label="Log out"
         >
           <LogOut size={16} />
         </button>
